@@ -32,6 +32,7 @@ Organized by category.
 | | `dual-mini` | Mini dual workflow: plan -> implement -> parallel review (AI antipattern + expert supervisor) with frontend + backend knowledge injection. |
 | | `dual-cqrs-mini` | Mini CQRS+ES dual workflow: plan -> implement -> parallel review (AI antipattern + expert supervisor) with CQRS+ES knowledge injection. |
 | 🎨 Frontend | `frontend` | Frontend-specialized development workflow with React/Next.js focused reviews and knowledge injection. |
+| | `frontend-maintenance` | Frontend maintenance workflow for existing systems: maintenance-scoped plan/implement/test/fix/supervise that respects current conventions and keeps changes within scope. |
 | ⚙️ Backend | `backend` | Backend-specialized development workflow with backend, security, and QA expert reviews. |
 | | `backend-cqrs` | CQRS+ES-specialized backend development workflow with CQRS+ES, security, and QA expert reviews. |
 | 🔧 Dual | `dual` | Frontend + backend development workflow: architecture, frontend, security, QA reviews with fix loops. |
