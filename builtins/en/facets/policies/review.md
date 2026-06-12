@@ -10,6 +10,7 @@ Define the shared judgment criteria and behavioral principles for all reviewers.
 | Eliminate ambiguity | Vague feedback like "clean this up a bit" is prohibited. Specify file, line, and proposed fix |
 | Fact-check | Verify against actual code before raising issues. Do not speculate |
 | Practical fixes | Propose implementable solutions, not theoretical ideals |
+| State consistency | For side effects and state changes, verify that success, failure, and interruption paths have no missing, duplicated, or inconsistent effects |
 | Boy Scout | Have problems fixed within the task scope when they are in changed code or in areas directly affecting correctness, contracts, or wiring of the change |
 
 ## Scope Determination
@@ -46,6 +47,7 @@ REJECT without exception if any of the following apply.
 - Replaced code/exports surviving after refactoring
 - Missing cross-validation of related fields (invariants of semantically coupled config values left unverified)
 - Missing caller, producer, or test data updates after a contract change
+- Missing, duplicated, or incorrectly ordered effects in side-effect or state-change paths
 - Sensitive data exposed in logs, error responses, or test output
 
 A DRY finding is not complete unless the proposed consolidation target is also sound. A consolidation proposal is invalid unless all of the following hold.
@@ -231,6 +233,16 @@ The review target is the entire cumulative diff from the task's starting point (
 - If the implementation step has emitted `coder-decisions.md`, read it and understand the recorded design decisions
 - Do not dismiss intentional decisions as false positives just because they were recorded. Evaluate validity against `order.md` / `plan.md` / actual code
 - If the design decision itself is flawed, raise it
+
+### Reviewing Side Effects and State Transitions
+
+When a change involves side effects or state changes such as external calls, configuration application, sessions, queues, locks, subscriptions, caches, or temporary resources, do not judge from the happy path alone.
+
+- Trace entry, normal completion, early return, exception, retry, interruption, and cleanup paths
+- Verify that anything acquired, started, registered, or applied is handled exactly as required on the corresponding paths
+- Verify that the same side effect is not executed more than once, and that required effects are not skipped on failure paths
+- For changes that affect shared state or downstream execution, verify that partial failure does not leave state that breaks the next run
+- If these checks have not been performed, do not treat the behavior as functionally verified
 
 ### Tracking Findings from Previous Reviews
 

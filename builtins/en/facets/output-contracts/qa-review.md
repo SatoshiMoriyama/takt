@@ -40,6 +40,11 @@
 - Tests: {Verified target, what was checked, and observed result; or state that it was unverified}
 - Functional check: {Verified target, what was checked, and observed result; or state that it was unverified}
 
+## Unverified Scope
+| Item | Reason | Impact on Decision |
+|------|--------|--------------------|
+| {Unverified scope, or "none"} | {Reason it was not verified} | {APPROVE allowed / REJECT reason} |
+
 ## Rejection Gate
 - REJECT is valid only when at least one finding exists in `new`, `persists`, or `reopened`
 - Findings without `finding_id` are invalid

@@ -21,6 +21,7 @@ Every behavior change requires a corresponding test, and every bug fix requires 
 | New behavior | Test required. REJECT if missing |
 | Bug fix | Regression test required. REJECT if missing |
 | Behavior change | Test update required. REJECT if missing |
+| Side-effect or state-transition change | Successful path and representative failure paths must be verified. REJECT if failure paths are untested |
 | Build (type check) | Build must succeed. REJECT if it fails |
 | Edge cases / boundary values | Test recommended (Warning) |
 
@@ -86,6 +87,18 @@ test('should return NotFound error when user does not exist', async () => {
 | Reproducibility | Same result every time | Depends on time or randomness |
 | Clarity | Failure cause is obvious | Failure cause is unclear |
 | Focus | One test, one concept | Multiple concerns mixed |
+
+## Testing Side Effects and State Transitions
+
+Changes involving side effects or state transitions are not sufficiently verified by successful-path coverage alone.
+
+| Criteria | Verdict |
+|----------|---------|
+| Only the successful path is tested, with no verification of state after failure, interruption, or early exit | REJECT |
+| Cleanup or duplicate execution for acquired, started, registered, or applied state is not verified | REJECT |
+| A change affects shared state or downstream execution but does not verify rerun behavior after partial failure | Warning. REJECT when it affects a primary path |
+| Mock-verified behavior is not distinguished from unverified real-integration scope | Warning. REJECT when it is a primary requirement |
+| Successful path, representative failure paths, and boundary state transitions are each verified | OK |
 
 ## Test Data and Fixtures
 
