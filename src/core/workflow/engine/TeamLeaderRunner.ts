@@ -12,7 +12,7 @@ import { incrementStepIteration } from './state-manager.js';
 import { createLogger, getErrorMessage } from '../../../shared/utils/index.js';
 import { runTeamLeaderExecution } from './team-leader-execution.js';
 import { buildTeamLeaderAggregatedContent } from './team-leader-aggregation.js';
-import { resolvePartErrorDetail, summarizeParts } from './team-leader-common.js';
+import { createTeamLeaderPlanningStep, resolvePartErrorDetail, summarizeParts } from './team-leader-common.js';
 import { buildTeamLeaderParallelLoggerOptions, emitTeamLeaderProgressHint } from './team-leader-streaming.js';
 import {
   collectUncoveredPartTimeoutIds,
@@ -28,6 +28,7 @@ import { buildTeamLeaderErrorPartResult, runTeamLeaderPart } from './team-leader
 import { runWithPhaseSpan } from '../observability/workflowSpans.js';
 import { buildPhaseExecutionId } from '../../../shared/utils/phaseExecutionId.js';
 import { isPlanningBudgetError } from './team-leader-budget-errors.js';
+import { resolveInspectToolsForProvider } from './engine-provider-options.js';
 
 const log = createLogger('team-leader-runner');
 
@@ -83,11 +84,7 @@ export class TeamLeaderRunner {
     const parentIteration = state.iteration;
 
     const stepIteration = incrementStepIteration(state, step.name);
-    const leaderStep: WorkflowStep = {
-      ...step,
-      persona: teamLeaderConfig.persona ?? step.persona,
-      personaPath: teamLeaderConfig.personaPath ?? step.personaPath,
-    };
+    const leaderStep = createTeamLeaderPlanningStep(step);
     const leaderProviderInfo = runtime
       ? this.deps.optionsBuilder.resolveStepProviderModel(leaderStep, runtime)
       : this.deps.optionsBuilder.resolveStepProviderModel(leaderStep);
@@ -103,6 +100,7 @@ export class TeamLeaderRunner {
     const leaderWorkflowMeta = this.deps.optionsBuilder.buildPhase1WorkflowMeta(
       leaderBaseOptions.workflowMeta,
     );
+    const inspectTools = resolveInspectToolsForProvider(teamLeaderConfig.inspectTools, leaderProvider);
 
     emitTeamLeaderProgressHint(this.deps.engineOptions, 'decompose');
     let didEmitPhaseStart = false;
@@ -141,6 +139,8 @@ export class TeamLeaderRunner {
         provider: leaderProvider,
         resolvedModel: leaderModel,
         resolvedProvider: leaderProvider,
+        language: this.deps.engineOptions.language,
+        inspectTools,
         workflowMeta: leaderWorkflowMeta,
         childProcessEnv: this.deps.engineOptions.childProcessEnv,
         onStream: this.deps.engineOptions.onStream,

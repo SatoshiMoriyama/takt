@@ -7,6 +7,10 @@ import {
   providerSupportsMcpServers,
   providerSupportsOpenCodeAllowedTools,
 } from '../../../infra/providers/provider-capabilities.js';
+import {
+  isTeamLeaderInspectTool,
+  type TeamLeaderInspectTool,
+} from '../../../shared/team-leader-inspect-tools.js';
 
 interface CapabilitySensitiveStepOptions {
   stepName: string;
@@ -14,6 +18,12 @@ interface CapabilitySensitiveStepOptions {
 }
 
 type CapabilityProbe = (provider: ProviderType | undefined) => boolean | undefined;
+
+const CLAUDE_TEAM_LEADER_INSPECT_TOOL_NAMES: Record<TeamLeaderInspectTool, string> = {
+  read: 'Read',
+  glob: 'Glob',
+  grep: 'Grep',
+};
 
 // Silent-drop: workflows may carry options for providers they aren't currently
 // running under. Keep the value only when capability is confirmed true.
@@ -61,6 +71,33 @@ export function resolvePartAllowedToolsForProvider(
   provider: ProviderType | undefined,
 ): string[] | undefined {
   return keepWhenProviderSupports(partAllowedTools, provider, providerSupportsAllowedTools);
+}
+
+export function resolveInspectToolsForProvider(
+  inspectTools: string[] | undefined,
+  provider: ProviderType | undefined,
+): string[] | undefined {
+  if (inspectTools === undefined || inspectTools.length === 0) {
+    return undefined;
+  }
+
+  const supportedInspectTools = inspectTools.map((tool) => {
+    if (!isTeamLeaderInspectTool(tool)) {
+      throw new Error(`Unsupported team_leader.inspect_tools value "${tool}"`);
+    }
+    return tool;
+  });
+
+  if (provider === undefined) {
+    throw new Error('team_leader.inspect_tools requires a resolved provider');
+  }
+  if (providerSupportsOpenCodeAllowedTools(provider) === true) {
+    return supportedInspectTools;
+  }
+  if (providerSupportsClaudeAllowedTools(provider) === true) {
+    return supportedInspectTools.map((tool) => CLAUDE_TEAM_LEADER_INSPECT_TOOL_NAMES[tool]);
+  }
+  throw new Error(`Provider "${provider}" does not support team_leader.inspect_tools`);
 }
 
 export function assertProviderResolvedForCapabilitySensitiveOptions(

@@ -28,6 +28,10 @@ export interface TeamLeaderConfig {
   persona?: string;
   /** Resolved absolute path for team leader persona */
   personaPath?: string;
+  /** Display name used for team leader persona provider resolution */
+  personaDisplayName?: string;
+  /** Raw persona key used for team leader provider_routing.personas lookup */
+  providerRoutingPersonaKey?: string;
   /** Maximum number of parts to run in parallel */
   maxConcurrency: number;
   maxTotalParts: number;
@@ -35,6 +39,8 @@ export interface TeamLeaderConfig {
   refillThreshold: number;
   /** Default timeout for parts in milliseconds */
   timeoutMs: number;
+  /** Read-only inspection tools for the parent decomposition call */
+  inspectTools?: string[];
   /** Persona reference for part agents */
   partPersona?: string;
   /** Resolved absolute path for part persona */

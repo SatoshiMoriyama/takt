@@ -9,10 +9,39 @@ import type {
   WorkflowStepRawSchema,
 } from '../../../core/models/index.js';
 import type { FacetResolutionContext, ResolvedSectionMap, WorkflowSections } from './resource-resolver.js';
-import { resolvePersona, resolveRefToContent } from './resource-resolver.js';
+import {
+  extractPersonaDisplayName,
+  resolvePersona,
+  resolveRefToContent,
+} from './resource-resolver.js';
 import { DEFAULT_TEAM_LEADER_MAX_TOTAL_PARTS } from '../../../shared/constants.js';
+import {
+  formatTeamLeaderInspectTools,
+  isTeamLeaderInspectTool,
+} from '../../../shared/team-leader-inspect-tools.js';
 
 type RawStep = z.output<typeof WorkflowStepRawSchema>;
+
+function normalizeTeamLeaderInspectTools(tools: string[] | undefined): string[] | undefined {
+  if (tools === undefined) {
+    return undefined;
+  }
+
+  const normalizedTools = tools.map((tool) => {
+    const normalizedTool = tool.trim().toLowerCase();
+    if (normalizedTool.length === 0) {
+      throw new Error('team_leader.inspect_tools contains an empty entry');
+    }
+    if (!isTeamLeaderInspectTool(normalizedTool)) {
+      throw new Error(
+        `team_leader.inspect_tools contains non-read-only tool "${normalizedTool}". Allowed values: ${formatTeamLeaderInspectTools()}`,
+      );
+    }
+    return normalizedTool;
+  });
+
+  return normalizedTools.length > 0 ? normalizedTools : undefined;
+}
 
 export function normalizeOutputContracts(
   raw: { report?: Array<{ name: string; format: string | { $param: string }; use_judge?: boolean; order?: string }> } | undefined,
@@ -86,6 +115,9 @@ export function normalizeTeamLeader(
 
   const { personaSpec, personaPath } = resolvePersona(raw.persona, sections, workflowDir, context);
   const { personaSpec: partPersona, personaPath: partPersonaPath } = resolvePersona(raw.part_persona, sections, workflowDir, context);
+  const rawPersona = raw.persona?.trim();
+  const personaDisplayName = personaSpec ? extractPersonaDisplayName(personaSpec) : undefined;
+  const providerRoutingPersonaKey = rawPersona && rawPersona.length > 0 ? rawPersona : undefined;
   const partTags = raw.part_tags?.map((tag) => {
     const normalizedTag = tag.trim();
     if (normalizedTag.length === 0) {
@@ -97,10 +129,13 @@ export function normalizeTeamLeader(
   return {
     persona: personaSpec,
     personaPath,
+    personaDisplayName,
+    providerRoutingPersonaKey,
     maxConcurrency: raw.max_concurrency ?? raw.max_parts ?? 3,
     maxTotalParts: raw.max_total_parts ?? DEFAULT_TEAM_LEADER_MAX_TOTAL_PARTS,
     refillThreshold: raw.refill_threshold ?? 0,
     timeoutMs: raw.timeout_ms ?? 900000,
+    inspectTools: normalizeTeamLeaderInspectTools(raw.inspect_tools),
     partPersona,
     partPersonaPath,
     partTags,
