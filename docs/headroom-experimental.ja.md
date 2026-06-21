@@ -2,7 +2,7 @@
 
 [English](./headroom-experimental.md)
 
-Headroom は外部 proxy / SDK であり、TAKT builtin feature ではありません。TAKT は、別途起動している Headroom 互換 endpoint へ、対応 provider の `base_url` 設定で routing できます。
+Headroom は外部 proxy / SDK であり、TAKT builtin feature ではありません。また、TAKT は Headroom を必須としません。TAKT は、別途起動している local Headroom proxy へ、対応 provider の `base_url` 設定で routing できます。
 
 ## Headroom を別プロセスで起動する
 
@@ -15,10 +15,11 @@ curl http://127.0.0.1:8787/health
 curl http://127.0.0.1:8787/stats
 ```
 
-Headroom telemetry を opt out する必要がある場合は、Headroom の現在の案内に従い、次のような設定を使います。
+Headroom telemetry を opt out する必要がある場合は、Headroom の現在の案内に従います。
 
 ```bash
 export HEADROOM_TELEMETRY=off
+headroom proxy --no-telemetry
 ```
 
 ## TAKT provider を routing する

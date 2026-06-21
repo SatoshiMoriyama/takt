@@ -2,7 +2,7 @@
 
 [日本語](./headroom-experimental.ja.md)
 
-Headroom is an external proxy / SDK. It is not a builtin TAKT feature. TAKT can route supported providers to a separately running Headroom-compatible endpoint through provider `base_url` settings.
+Headroom is an external proxy / SDK. It is not a builtin TAKT feature, and TAKT does not require Headroom. TAKT can route supported providers to a separately running local Headroom proxy through provider `base_url` settings.
 
 ## Run Headroom Separately
 
@@ -15,10 +15,11 @@ curl http://127.0.0.1:8787/health
 curl http://127.0.0.1:8787/stats
 ```
 
-If you need to opt out of Headroom telemetry, follow Headroom's current guidance, such as setting:
+If you need to opt out of Headroom telemetry, follow Headroom's current guidance, such as:
 
 ```bash
 export HEADROOM_TELEMETRY=off
+headroom proxy --no-telemetry
 ```
 
 ## Route TAKT Providers
