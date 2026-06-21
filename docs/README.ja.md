@@ -226,6 +226,8 @@ workflow ファイルの正式ディレクトリ名は `workflows/` です。
 | `backend` | バックエンド開発向けの workflow。 |
 | `dual` | フロントエンド＋バックエンドを同時に進める workflow。 |
 | `takt-default` | TAKT 自体の開発で実際に使われている workflow。CLI ツールの開発にそのまま活用できます。 |
+| `frontend-maintenance` | フロントエンド本番保守向け。ループモニター付き厳密マルチフェーズレビュー。 |
+| `backend-maintenance` | バックエンド本番保守向け。デュアルスーパーバイザー最終承認付き厳密マルチフェーズレビュー。 |
 | `*-mini` シリーズ | 各 workflow の軽量版（`default-mini` / `frontend-mini` / `backend-mini` / `dual-mini`）。`write_tests` を省いた構成。 |
 
 全ワークフロー・ペルソナの一覧は [Builtin Catalog](./builtin-catalog.ja.md) を参照してください。

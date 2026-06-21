@@ -6,6 +6,29 @@
 
 フォーマットは [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) に基づいています。
 
+## [0.48.0] - 2026-06-21
+
+### Added
+
+- プロバイダ `base_url` サポート (#867)。`provider_options.claude.base_url` および `provider_options.codex.base_url` でカスタム API エンドポイントを設定可能に。グローバル・プロジェクト・ワークフローの各レベルで設定できる。セキュリティ上、プロジェクト/ワークフロー設定ではループバック以外の URL はブロックされる。
+- チームリーダー `inspect_tools` (#857, #858)。`team_leader` ブロックで `inspect_tools` を指定し、タスク分解時にリーダーが使えるツールを制限可能に。`read`、`glob`、`grep` をサポート。OpenCode と Claude プロバイダで利用可能。
+- チームリーダーパートタグ (#855)。チームリーダーが分解したワーカーパートに `tags` を付与可能に。`provider_routing.tags` によるパートレベルのプロバイダ/モデル切り替えが可能。
+- Nix flake パッケージング (#837)。TAKT を Nix flake として提供開始。`x86_64-linux`、`aarch64-linux`、`x86_64-darwin`、`aarch64-darwin` で再現可能なビルドを提供。Node.js 22 と Bun を含む dev shell 付き。
+- `backend-maintenance` ビルトインワークフロー。本番システム保守向けの厳密なワークフローテンプレート。複数レビューフェーズ（アーキテクチャ、テスト、セキュリティ、QA、ピュアレビュー、コーディングレビュー）、ループモニター、デュアルスーパーバイザーによる最終承認を備える。
+- `token-usage.sh` 分析ツール。`tools/` 配下のシェルスクリプトで、TAKT 実行のトークン消費量を集計。上位 N 件のラン表示、ステップ別内訳、キャッシュ率、CSV エクスポートに対応。
+
+### Fixed
+
+- OpenCode の no-tools フェーズでツールガイダンスを省略 (#874)。`allowedTools` が空のフェーズではツール命名ガイダンスを返さないように修正。
+- ワークツリークローンの `.takt/.gitignore` 処理を修正 (#862, #864)。deny-by-default テンプレートがクローンに正しく作成され、`.takt/runs/` 配下のランタイム成果物がコミットされないように修正。
+- E2E テストの安定性向上。mock E2E テストで `git` 認証プロンプトによるハングを防止（`GIT_TERMINAL_PROMPT=0`）。プロバイダテスト用に GitHub credential helper を isolated gitconfig に継承。
+
+### Internal
+
+- レビュー・テスト facet の強化 (#859, #868)。テストポリシーに absence-only テストや非継承値テストの REJECT 条件を追加。E2E knowledge facet を新設。review-test instruction を更新。
+- ワークフローカテゴリに `backend-maintenance` の順序を追加。
+- Codex faceted-prompting 依存を更新 (#863)。
+
 ## [0.47.0] - 2026-06-18
 
 ### Added

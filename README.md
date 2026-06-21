@@ -223,6 +223,8 @@ When the same workflow name exists in multiple locations, TAKT resolves in this 
 | `backend` | Backend development workflow. |
 | `dual` | Combined frontend + backend workflow. |
 | `takt-default` | The workflow used to develop TAKT itself. Directly applicable to other CLI tool development. |
+| `frontend-maintenance` | Frontend production maintenance. Strict multi-phase review with loop monitors. |
+| `backend-maintenance` | Backend production maintenance. Strict multi-phase review with dual-supervisor sign-off. |
 | `*-mini` series | Lightweight variants of each workflow (`default-mini` / `frontend-mini` / `backend-mini` / `dual-mini`). Omits `write_tests`. |
 
 See the [Builtin Catalog](./docs/builtin-catalog.md) for all workflows and personas.

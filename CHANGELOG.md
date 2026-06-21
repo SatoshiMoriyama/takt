@@ -6,6 +6,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.48.0] - 2026-06-21
+
+### Added
+
+- Provider `base_url` support (#867). Custom API endpoints can now be configured for Claude and Codex providers via `provider_options.claude.base_url` and `provider_options.codex.base_url` at global, project, or workflow level. Non-loopback URLs in project/workflow config are blocked for security; use global config or environment variables for external endpoints.
+- Team leader `inspect_tools` (#857, #858). The `team_leader` block now accepts `inspect_tools` to limit which tools the leader agent can use during task decomposition. Supported values: `read`, `glob`, `grep`. Currently available on OpenCode and Claude providers.
+- Team leader part tags (#855). Worker parts decomposed by the team leader now support `tags`, enabling `provider_routing.tags` to apply provider/model overrides at the part level.
+- Nix flake packaging (#837). TAKT is now available as a Nix flake, providing reproducible builds across `x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, and `aarch64-darwin`. Includes a dev shell with Node.js 22 and Bun.
+- `backend-maintenance` builtin workflow. A strict workflow template for production system maintenance with multiple review phases (architecture, testing, security, QA, pure-review, coding-review), loop monitors for anti-pattern and reviewer cycles, and dual-supervisor final sign-off.
+- `token-usage.sh` analytics tool. A shell script under `tools/` that aggregates token consumption across TAKT runs, displaying top-N runs by tokens with per-step breakdown, caching percentages, and CSV export.
+
+### Fixed
+
+- OpenCode tool guidance omitted for no-tools phases (#874). The OpenCode provider's tool naming guidance now respects `allowedTools` and returns `null` when the allowed tools list is empty, preventing unnecessary guidance in tool-free execution phases.
+- `.takt/.gitignore` handling in worktree clones (#862, #864). The deny-by-default `.takt/.gitignore` template is now correctly created in worktree clones, ensuring runtime artifacts under `.takt/runs/` are not committed.
+- E2E test stability. Prevented `git` authentication prompts from hanging mock E2E tests (`GIT_TERMINAL_PROMPT=0`), and inherited the GitHub credential helper into the isolated E2E gitconfig so provider tests can push.
+
+### Internal
+
+- Review and testing facets strengthened (#859, #868). Testing policy expanded with REJECT conditions for absence-only and non-inherited-value tests. E2E knowledge facet added. Review-test instructions updated.
+- Workflow categories updated with `backend-maintenance` ordering.
+- Codex faceted-prompting dependency updated (#863).
+
 ## [0.47.0] - 2026-06-18
 
 ### Added

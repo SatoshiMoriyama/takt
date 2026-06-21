@@ -35,6 +35,7 @@ Organized by category.
 | | `frontend-maintenance` | (Experimental) Frontend workflow for modifying existing products: maintenance-scoped plan/implement/test/fix/supervise that respects current conventions and keeps changes within scope. Can be heavy-handed today — use as a starting point and tune. |
 | ⚙️ Backend | `backend` | Backend-specialized development workflow with backend, security, and QA expert reviews. |
 | | `backend-cqrs` | CQRS+ES-specialized backend development workflow with CQRS+ES, security, and QA expert reviews. |
+| | `backend-maintenance` | Strict backend maintenance workflow with multi-phase parallel review (architecture, testing, security, QA, pure-review, coding-review), loop monitors, and dual-supervisor sign-off. |
 | 🔧 Dual | `dual` | Frontend + backend development workflow: architecture, frontend, security, QA reviews with fix loops. |
 | | `dual-cqrs` | Frontend + backend development workflow (CQRS+ES specialized): CQRS+ES, frontend, security, QA reviews with fix loops. |
 | 🏗️ Infrastructure | `terraform` | Terraform IaC development workflow: plan → implement → parallel review → supervisor validation → fix → complete. |
