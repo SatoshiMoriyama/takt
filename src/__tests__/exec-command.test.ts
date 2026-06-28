@@ -14,6 +14,7 @@ import { DEFAULT_EXEC_CONFIG } from '../features/exec/defaults.js';
 import { saveExecPreset, saveLastUsedExecConfig } from '../features/exec/presetStore.js';
 import type { ExecConfig } from '../features/exec/types.js';
 import { selectOption, type SelectOptionItem } from '../shared/prompt/index.js';
+import { stripAnsi } from '../shared/utils/text.js';
 
 vi.mock('../infra/providers/index.js', () => ({
   getProvider: vi.fn(() => ({ setup: vi.fn() })),
@@ -751,7 +752,7 @@ describe('exec command setup', () => {
     let output = '';
     try {
       await expect(runExecCommand(projectDir, { preset: 'backend' })).resolves.toBeUndefined();
-      output = consoleLogSpy.mock.calls.map((call) => call.join(' ')).join('\n');
+      output = consoleLogSpy.mock.calls.map((call) => stripAnsi(call.join(' '))).join('\n');
     } finally {
       consoleLogSpy.mockRestore();
     }
@@ -786,7 +787,7 @@ describe('exec command setup', () => {
     let output = '';
     try {
       await expect(runExecCommand(projectDir, { preset: 'backend' })).resolves.toBeUndefined();
-      output = consoleLogSpy.mock.calls.map((call) => call.join(' ')).join('\n');
+      output = consoleLogSpy.mock.calls.map((call) => stripAnsi(call.join(' '))).join('\n');
     } finally {
       consoleLogSpy.mockRestore();
     }
