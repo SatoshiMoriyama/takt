@@ -8,7 +8,7 @@
 description: 'TAKT facet eval: peer-review / arch-review round-2 re-scan'
 
 prompts:
-  - file://prompts/arch-review.phase1.md
+  - file://prompts/rescan.phase1.md
 
 providers:
   - id: openai:codex-sdk
@@ -23,6 +23,8 @@ providers:
     label: gemma4-31b
   - id: 'exec: bash providers/opencode-review.sh ollama-cloud/qwen3.5:397b fixtures/inventory-es'
     label: qwen3.5-397b
+  - id: 'exec: bash providers/opencode-review.sh ollama-cloud/qwen3-coder-next fixtures/inventory-es'
+    label: qwen3-coder-next
 
 tests:
   - description: 'round-2: resolved previous findings must not suppress a full re-scan'
@@ -33,7 +35,8 @@ tests:
       - type: javascript
         metric: rescan/evidence-table-present
         value: |
-          return /再走査証跡|Re-scan Evidence/i.test(output);
+          const ok = /再走査証跡|Re-scan Evidence/i.test(output);
+          return ok;
       - type: javascript
         metric: recall/ship-projection-contract
         value: |
@@ -47,7 +50,8 @@ tests:
       - type: javascript
         metric: recall/monolith
         value: |
-          return /(分割|単一ファイル|モノリ|複数の責務|1ファイル|一つのファイル)/.test(output);
+          const ok = /(分割|単一ファイル|モノリ|複数の責務|1ファイル|一つのファイル)/.test(output);
+          return ok;
       - type: javascript
         metric: recall/mutable-initial-state
         value: |
@@ -73,4 +77,9 @@ tests:
       - type: javascript
         metric: verdict/reject
         value: |
-          return /## 結果: *(REJECT|IMPROVE)/.test(output);
+          // src/features/analytics/report-parser.ts の extractDecisionFromReport と
+          // 同様に、verdict 値を語（\w+）として抽出し REJECT と厳密比較する。
+          // 部分一致（REJECTED 等）を verdict と誤認しないため。
+          const labeled = [...output.matchAll(/(?:結果|判定|Verdict)[^\w\n]{0,12}(\w+)/g)].map((m) => m[1]);
+          const headings = [...output.matchAll(/^#+ *(\w+)/gm)].map((m) => m[1]);
+          return [...labeled, ...headings].some((v) => v.toUpperCase() === 'REJECT');
