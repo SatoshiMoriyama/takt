@@ -567,7 +567,15 @@ export class OpenCodeClient {
     prompt: string,
     options: OpenCodeCallOptions,
   ): Promise<AgentResponse> {
-    for (let attempt = 1; attempt <= OPENCODE_RETRY_MAX_ATTEMPTS; attempt++) {
+    // native format（StructuredOutput ツール）をモデルが呼ばない個体が
+    // あるため、その失敗を検出したら format なし（手書き JSON + 下流の
+    // 是正リトライ）へフォールバックする。
+    let disableNativeStructuredOutput = false;
+    // フォールバック（format なし再試行）は transient 再試行の予算とは別枠で
+    // 1回だけ確保する: 先行の transient エラーで予算を使い切っていても、
+    // 最終試行の format 失敗から救済できるようにする。
+    let maxAttempts = OPENCODE_RETRY_MAX_ATTEMPTS;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       let idleTimeoutId: ReturnType<typeof setTimeout> | undefined;
       const streamAbortController = new AbortController();
       const timeoutMessage = `OpenCode stream timed out after ${Math.floor(OPENCODE_STREAM_IDLE_TIMEOUT_MS / 60000)} minutes of inactivity`;
@@ -734,7 +742,7 @@ export class OpenCodeClient {
           ...(options.systemPrompt !== undefined ? { system: options.systemPrompt } : {}),
           // ネイティブ構造化出力: OpenCode がスキーマのキー構造を強制する
           // （enum 等の値制約までは保証されないため、下流のスキーマ検証は維持）。
-          ...(options.outputSchema !== undefined
+          ...(options.outputSchema !== undefined && !disableNativeStructuredOutput
             ? { format: { type: 'json_schema' as const, schema: options.outputSchema, retryCount: 2 } }
             : {}),
           parts: [{ type: 'text' as const, text: prompt }],
@@ -1085,6 +1093,18 @@ export class OpenCodeClient {
             emitResult(options.onStream, false, rateLimitedResponse.error ?? rateLimitedResponse.content, activeSessionId);
             return rateLimitedResponse;
           }
+          if (
+            options.outputSchema !== undefined
+            && !disableNativeStructuredOutput
+            && message.toLowerCase().includes('did not produce structured output')
+          ) {
+            disableNativeStructuredOutput = true;
+            maxAttempts = Math.max(maxAttempts, attempt + 1);
+            log.info('Native structured output failed; retrying without format', { agentType, attempt });
+            await this.waitForRetryDelay(attempt, options.abortSignal);
+            continue;
+          }
+
           const retriable = this.isRetriableError(message, streamAbortController.signal.aborted, abortCause);
           if (retriable && attempt < OPENCODE_RETRY_MAX_ATTEMPTS) {
             log.info('Retrying OpenCode call after transient failure', { agentType, attempt, message });
