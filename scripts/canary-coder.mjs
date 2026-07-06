@@ -13,6 +13,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 
 const args = process.argv.slice(2);
@@ -72,10 +73,27 @@ try {
   // ツール粒度を持たないため、構造化カウントには takt 側の拡張が要る。
   const toolErrors = (output.match(/^\s*✗ \S+:/gm) ?? []).length;
   const runCompleted = result.status === 0 && !/aborted/i.test(output);
-  // 完了宣言だけの空振りを弾く: 成果物の実在と内容まで確認する
+  // 完了宣言だけの空振りを弾く: 成果物は形ではなく挙動で検証する。
+  // リポジトリの typescript devDep でトランスパイルして import 実行し、
+  // 要求仕様どおりの戻り値かを直接確認する（正規表現による形の検査は
+  // バイパス可能だった。Node の型ストリップは engines 下限の Node 20 に
+  // 存在しないため使わない）。
   const artifactPath = join(workDir, 'greet.ts');
-  const artifactOk = existsSync(artifactPath)
-    && /export\s+(function\s+greet|const\s+greet)/.test(readFileSync(artifactPath, 'utf-8'));
+  let artifactOk = false;
+  if (existsSync(artifactPath)) {
+    const { default: ts } = await import('typescript');
+    const transpiled = ts.transpileModule(readFileSync(artifactPath, 'utf-8'), {
+      compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const probePath = join(workDir, 'greet.probe.mjs');
+    writeFileSync(probePath, transpiled);
+    try {
+      const { greet } = await import(pathToFileURL(probePath).href);
+      artifactOk = typeof greet === 'function' && greet('Takt') === 'Hello, Takt!';
+    } catch (error) {
+      console.error(`artifact probe failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 
   console.log(output.split('\n').slice(-15).join('\n'));
   console.log(`---\ncanary result: completed=${runCompleted} artifact=${artifactOk} toolErrors=${toolErrors}`);
