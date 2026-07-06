@@ -18,7 +18,7 @@ import { createLogger } from '../../../shared/utils/index.js';
 import { buildJudgeConditions } from '../../../agents/judge-utils.js';
 import { AggregateEvaluator } from './AggregateEvaluator.js';
 import { evaluateWhenExpression } from './when-evaluator.js';
-import { isDeferredDeterministicCondition, isDeterministicCondition, isFindingsCondition } from './rule-utils.js';
+import { hasUnquotedFindingsReference, isDeferredDeterministicCondition, isDeterministicCondition, isFindingsCondition, unwrapWhenCondition } from './rule-utils.js';
 
 const log = createLogger('rule-evaluator');
 
@@ -169,8 +169,8 @@ export class RuleEvaluator {
         return false;
       }
       return isFindingsCondition(rule.condition)
-        || (rule.aggregateGuardCondition !== undefined && isFindingsCondition(rule.aggregateGuardCondition))
-        || (rule.guardCondition !== undefined && isFindingsCondition(rule.guardCondition));
+        || (rule.aggregateGuardCondition !== undefined && hasUnquotedFindingsReference(rule.aggregateGuardCondition))
+        || (rule.guardCondition !== undefined && hasUnquotedFindingsReference(rule.guardCondition));
     }) === true;
   }
 
@@ -189,6 +189,11 @@ export class RuleEvaluator {
     // タグは一致してもガード（findings 条件）が成立しない場合は
     // このステージでは不一致として扱い、後続の検出ステージに委ねる。
     if (rule?.guardCondition !== undefined && !evaluateWhenExpression(rule.guardCondition, this.ctx.state)) {
+      return -1;
+    }
+    // 決定的条件のルールはタグ申告（[STEP:N]）でも成立させない。
+    // 実状態で偽なら不一致として扱い、決定的評価ステージに委ねる。
+    if (rule !== undefined && isDeterministicCondition(rule.condition) && !evaluateWhenExpression(unwrapWhenCondition(rule.condition), this.ctx.state)) {
       return -1;
     }
 
@@ -234,7 +239,7 @@ export class RuleEvaluator {
       if (isDeferredDeterministicCondition(rule.condition)) {
         continue;
       }
-      if (evaluateWhenExpression(rule.condition, this.ctx.state)) {
+      if (evaluateWhenExpression(unwrapWhenCondition(rule.condition), this.ctx.state)) {
         return i;
       }
     }
@@ -257,7 +262,7 @@ export class RuleEvaluator {
       if (!isDeterministicCondition(rule.condition) || !isDeferredDeterministicCondition(rule.condition)) {
         continue;
       }
-      if (evaluateWhenExpression(rule.condition, this.ctx.state)) {
+      if (evaluateWhenExpression(unwrapWhenCondition(rule.condition), this.ctx.state)) {
         return i;
       }
     }

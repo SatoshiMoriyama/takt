@@ -186,7 +186,7 @@ describe('WorkflowEngine structured caller defaults', () => {
               name: 'architecture-review',
               persona: 'architecture-reviewer',
               instruction: 'Review architecture.',
-              rules: [makeRule('true', 'COMPLETE')],
+              rules: [makeRule('when(true)', 'COMPLETE')],
             }),
           ],
           rules,
@@ -195,7 +195,7 @@ describe('WorkflowEngine structured caller defaults', () => {
           name: 'fix',
           persona: 'coder',
           instruction: 'Fix.',
-          rules: [makeRule('true', 'COMPLETE')],
+          rules: [makeRule('when(true)', 'COMPLETE')],
         }),
       ],
     };
@@ -310,7 +310,7 @@ describe('WorkflowEngine structured caller defaults', () => {
               aiConditionText: 'is this workflow ready to complete?',
             }),
             makeRule('fallback', 'ABORT', {
-              condition: 'true',
+              condition: 'when(true)',
             }),
           ],
         }),
@@ -395,15 +395,15 @@ describe('WorkflowEngine structured caller defaults', () => {
           persona: 'reviewer',
           instruction: 'Review.',
           rules: [
-            makeRule('findings.open.count == 0', 'COMPLETE'),
-            makeRule('findings.open.bySeverity.high > 0', 'fix'),
+            makeRule('when(findings.open.count == 0)', 'COMPLETE'),
+            makeRule('when(findings.open.bySeverity.high > 0)', 'fix'),
           ],
         }),
         makeStep({
           name: 'fix',
           persona: 'coder',
           instruction: 'Fix.',
-          rules: [makeRule('true', 'COMPLETE')],
+          rules: [makeRule('when(true)', 'COMPLETE')],
         }),
       ],
     };
@@ -467,15 +467,15 @@ describe('WorkflowEngine structured caller defaults', () => {
           persona: 'reviewer',
           instruction: 'Review.',
           rules: [
-            makeRule('findings.open.count == 0', 'COMPLETE'),
-            makeRule('findings.open.bySeverity.high > 0', 'fix'),
+            makeRule('when(findings.open.count == 0)', 'COMPLETE'),
+            makeRule('when(findings.open.bySeverity.high > 0)', 'fix'),
           ],
         }),
         makeStep({
           name: 'fix',
           persona: 'coder',
           instruction: 'Fix.',
-          rules: [makeRule('true', 'COMPLETE')],
+          rules: [makeRule('when(true)', 'COMPLETE')],
         }),
       ],
     };
@@ -550,15 +550,15 @@ describe('WorkflowEngine structured caller defaults', () => {
           persona: 'reviewer',
           instruction: 'Review.',
           rules: [
-            makeRule('findings.open.count == 0', 'COMPLETE'),
-            makeRule('findings.open.bySeverity.high > 0', 'fix'),
+            makeRule('when(findings.open.count == 0)', 'COMPLETE'),
+            makeRule('when(findings.open.bySeverity.high > 0)', 'fix'),
           ],
         }),
         makeStep({
           name: 'fix',
           persona: 'coder',
           instruction: 'Fix.',
-          rules: [makeRule('true', 'COMPLETE')],
+          rules: [makeRule('when(true)', 'COMPLETE')],
         }),
       ],
     };
@@ -651,14 +651,14 @@ describe('WorkflowEngine structured caller defaults', () => {
           outputContracts: [{ name: 'merge-readiness-review.md', format: '# Merge Readiness Review' }],
           rules: [
             makeRule('approved', 'COMPLETE', { guardCondition: 'findings.open.count == 0' }),
-            makeRule('findings.open.count > 0', 'fix'),
+            makeRule('when(findings.open.count > 0)', 'fix'),
           ],
         }),
         makeStep({
           name: 'fix',
           persona: 'coder',
           instruction: 'Fix.',
-          rules: [makeRule('true', 'COMPLETE')],
+          rules: [makeRule('when(true)', 'COMPLETE')],
         }),
       ],
     };
@@ -678,6 +678,98 @@ describe('WorkflowEngine structured caller defaults', () => {
     // ガード不成立で approved は採用されず、決定的ルールで fix に流れて完走する
     expect(result.status).toBe('completed');
     expect(result.stepOutputs.has('fix')).toBe(true);
+  });
+
+  it('判定より前に位置する真に成立した決定的ルールが approved 判定より先行して採用される', async () => {
+    const initialLedger = {
+      version: 1,
+      workflowName: 'phase3-preempt-test',
+      nextId: 1,
+      updatedAt: '2026-06-13T00:00:00.000Z',
+      findings: [],
+      rawFindings: [],
+      conflicts: [
+        {
+          id: 'C-TEST',
+          status: 'active',
+          findingIds: [],
+          rawFindingIds: [],
+          description: 'Reviewers disagree.',
+          firstSeen: { runId: 'run-1', stepName: 'reviewers', timestamp: '2026-06-13T00:00:00.000Z' },
+          lastSeen: { runId: 'run-1', stepName: 'reviewers', timestamp: '2026-06-13T00:00:00.000Z' },
+        },
+      ],
+    };
+
+    vi.mocked(runAgent).mockImplementation(async (_persona, instruction, options) => {
+      options?.onPromptResolved?.({ systemPrompt: 'system', userInstruction: instruction });
+      const schemaText = options?.outputSchema ? JSON.stringify(options.outputSchema) : '';
+      if (schemaText.includes('"step"')) {
+        // 判定は approved(=2) を主張する
+        return {
+          persona: 'judge',
+          status: 'done',
+          content: '{"step": 2}',
+          structuredOutput: { step: 2 },
+          timestamp: new Date('2026-06-13T00:00:03.000Z'),
+        };
+      }
+      return {
+        persona: 'agent',
+        status: 'done',
+        content: 'All good, approving.',
+        timestamp: new Date('2026-06-13T00:00:01.000Z'),
+      };
+    });
+
+    const config: WorkflowConfig = {
+      name: 'phase3-preempt-test',
+      maxSteps: 3,
+      initialStep: 'final-gate',
+      findingContract: {
+        ledgerPath: '.takt/findings/peer-review.json',
+        rawFindingsPath: '.takt/findings/raw',
+        manager: {
+          persona: 'findings-manager',
+          instruction: 'findings-manager',
+          outputContract: 'findings-manager',
+        },
+      },
+      steps: [
+        makeStep({
+          name: 'final-gate',
+          persona: 'merge-readiness-reviewer',
+          instruction: 'Judge merge readiness.',
+          outputContracts: [{ name: 'merge-readiness-review.md', format: '# Merge Readiness Review' }],
+          rules: [
+            // 位置準拠: 判定より前にある決定的ルールだけが先行採用される
+            makeRule('when(findings.conflicts.count > 0)', 'ABORT'),
+            makeRule('approved', 'COMPLETE'),
+            makeRule('needs_fix', 'fix'),
+          ],
+        }),
+        makeStep({
+          name: 'fix',
+          persona: 'coder',
+          instruction: 'Fix.',
+          rules: [makeRule('when(true)', 'COMPLETE')],
+        }),
+      ],
+    };
+
+    const ledgerPath = getAuthoritativeLedgerPath(cwd);
+    mkdirSync(dirname(ledgerPath), { recursive: true });
+    writeFileSync(ledgerPath, JSON.stringify(initialLedger, null, 2), 'utf-8');
+
+    const result = await new WorkflowEngine(config, cwd, 'task', {
+      projectCwd: cwd,
+      provider: 'claude',
+      reportDirName: 'test-report-dir',
+      detectRuleIndex: () => -1,
+    }).run();
+
+    // conflict が実在する以上、approved 判定でも ABORT が先行する
+    expect(result.status).toBe('aborted');
   });
 
   it('parallel sub-step の構造化出力が壊れていたら同一セッションで1回是正して続行する', async () => {
@@ -763,11 +855,11 @@ describe('WorkflowEngine structured caller defaults', () => {
               name: 'solo-review',
               persona: 'solo-reviewer',
               instruction: 'Review.',
-              rules: [makeRule('true', 'COMPLETE')],
+              rules: [makeRule('when(true)', 'COMPLETE')],
             }),
           ],
           rules: [
-            makeRule('findings.open.count == 0', 'COMPLETE'),
+            makeRule('when(findings.open.count == 0)', 'COMPLETE'),
             makeRule('invalid manager output', 'ABORT', { returnValue: 'needs_fix' }),
           ],
         }),
@@ -862,11 +954,11 @@ describe('WorkflowEngine structured caller defaults', () => {
               name: 'solo-review',
               persona: 'solo-reviewer',
               instruction: 'Review.',
-              rules: [makeRule('true', 'COMPLETE')],
+              rules: [makeRule('when(true)', 'COMPLETE')],
             }),
           ],
           rules: [
-            makeRule('findings.open.count == 0', 'COMPLETE'),
+            makeRule('when(findings.open.count == 0)', 'COMPLETE'),
             makeRule('invalid manager output', 'ABORT', { returnValue: 'needs_fix' }),
           ],
         }),
@@ -991,12 +1083,12 @@ describe('WorkflowEngine structured caller defaults', () => {
               outputContracts: [{ name: 'guarded-review.md', format: '# Guarded Review' }],
               rules: [
                 makeRule('approved', 'COMPLETE', { guardCondition: 'findings.open.count == 0' }),
-                makeRule('findings.open.count > 0', 'fix'),
+                makeRule('when(findings.open.count > 0)', 'fix'),
               ],
             }),
           ],
           rules: [
-            makeRule('findings.open.count > 0', 'fix'),
+            makeRule('when(findings.open.count > 0)', 'fix'),
             makeRule('all("approved")', 'COMPLETE'),
           ],
         }),
@@ -1004,7 +1096,7 @@ describe('WorkflowEngine structured caller defaults', () => {
           name: 'fix',
           persona: 'coder',
           instruction: 'Fix.',
-          rules: [makeRule('true', 'COMPLETE')],
+          rules: [makeRule('when(true)', 'COMPLETE')],
         }),
       ],
     };
@@ -1169,25 +1261,25 @@ describe('WorkflowEngine structured caller defaults', () => {
               name: 'architecture-review',
               persona: 'architecture-reviewer',
               instruction: 'Review architecture.',
-              rules: [makeRule('true', 'COMPLETE')],
+              rules: [makeRule('when(true)', 'COMPLETE')],
             }),
             makeStep({
               name: 'security-review',
               persona: 'security-reviewer',
               instruction: 'Review security.',
-              rules: [makeRule('true', 'COMPLETE')],
+              rules: [makeRule('when(true)', 'COMPLETE')],
             }),
           ],
           rules: [
-            makeRule('findings.open.count == 0', 'COMPLETE'),
-            makeRule('findings.open.bySeverity.high > 0', 'fix'),
+            makeRule('when(findings.open.count == 0)', 'COMPLETE'),
+            makeRule('when(findings.open.bySeverity.high > 0)', 'fix'),
           ],
         }),
         makeStep({
           name: 'fix',
           persona: 'coder',
           instruction: 'Fix.',
-          rules: [makeRule('true', 'COMPLETE')],
+          rules: [makeRule('when(true)', 'COMPLETE')],
         }),
       ],
     };
@@ -1342,25 +1434,25 @@ describe('WorkflowEngine structured caller defaults', () => {
               name: 'architecture-review',
               persona: 'architecture-reviewer',
               instruction: 'Review architecture.',
-              rules: [makeRule('true', 'COMPLETE')],
+              rules: [makeRule('when(true)', 'COMPLETE')],
             }),
             makeStep({
               name: 'security-review',
               persona: 'security-reviewer',
               instruction: 'Review security.',
-              rules: [makeRule('true', 'COMPLETE')],
+              rules: [makeRule('when(true)', 'COMPLETE')],
             }),
           ],
           rules: [
-            makeRule('findings.open.count == 0', 'COMPLETE'),
-            makeRule('findings.open.bySeverity.high > 0', 'fix'),
+            makeRule('when(findings.open.count == 0)', 'COMPLETE'),
+            makeRule('when(findings.open.bySeverity.high > 0)', 'fix'),
           ],
         }),
         makeStep({
           name: 'fix',
           persona: 'coder',
           instruction: 'Fix.',
-          rules: [makeRule('true', 'COMPLETE')],
+          rules: [makeRule('when(true)', 'COMPLETE')],
         }),
       ],
     };
@@ -1524,19 +1616,19 @@ describe('WorkflowEngine structured caller defaults', () => {
               name: 'architecture-review',
               persona: 'architecture-reviewer',
               instruction: 'Review architecture.',
-              rules: [makeRule('true', 'COMPLETE')],
+              rules: [makeRule('when(true)', 'COMPLETE')],
             }),
           ],
           rules: [
-            makeRule('findings.open.count == 0', 'COMPLETE'),
-            makeRule('findings.open.bySeverity.high > 0', 'fix'),
+            makeRule('when(findings.open.count == 0)', 'COMPLETE'),
+            makeRule('when(findings.open.bySeverity.high > 0)', 'fix'),
           ],
         }),
         makeStep({
           name: 'fix',
           persona: 'coder',
           instruction: 'Fix.',
-          rules: [makeRule('true', 'COMPLETE')],
+          rules: [makeRule('when(true)', 'COMPLETE')],
         }),
       ],
     };
@@ -1703,17 +1795,17 @@ describe('WorkflowEngine structured caller defaults', () => {
               name: 'architecture-review',
               persona: 'architecture-reviewer',
               instruction: 'Review architecture.',
-              rules: [makeRule('true', 'COMPLETE')],
+              rules: [makeRule('when(true)', 'COMPLETE')],
             }),
           ],
           rules: [
-            makeRule('findings.open.bySeverity.high > 0', 'fix'),
+            makeRule('when(findings.open.bySeverity.high > 0)', 'fix'),
             makeRule('ai("Invalid manager output can be fixed by code changes")', 'fix', {
               isAiCondition: true,
               aiConditionText: 'Invalid manager output can be fixed by code changes',
             }),
             {
-              condition: 'findings.conflicts.count > 0',
+              condition: 'when(findings.conflicts.count > 0)',
               returnValue: 'need_replan',
             },
           ],
@@ -1722,7 +1814,7 @@ describe('WorkflowEngine structured caller defaults', () => {
           name: 'fix',
           persona: 'coder',
           instruction: 'Fix.',
-          rules: [makeRule('true', 'COMPLETE')],
+          rules: [makeRule('when(true)', 'COMPLETE')],
         }),
       ],
     };
@@ -1810,7 +1902,7 @@ describe('WorkflowEngine structured caller defaults', () => {
         aiConditionText: 'Invalid manager output can be fixed by code changes',
       }),
       {
-        condition: 'findings.conflicts.count > 0',
+        condition: 'when(findings.conflicts.count > 0)',
         returnValue: 'needs_fix',
       },
     ]);
@@ -1839,7 +1931,7 @@ describe('WorkflowEngine structured caller defaults', () => {
           aiConditionText: 'Invalid manager output should use this return',
         },
         {
-          condition: 'findings.conflicts.count > 0',
+          condition: 'when(findings.conflicts.count > 0)',
           returnValue: fallbackReturnValue,
         },
       ]);
@@ -1861,7 +1953,7 @@ describe('WorkflowEngine structured caller defaults', () => {
         isAiCondition: true,
         aiConditionText: 'Invalid manager output can be fixed by code changes',
       }),
-      makeRule('findings.conflicts.count > 0', 'fix'),
+      makeRule('when(findings.conflicts.count > 0)', 'fix'),
     ]);
 
     expect(abortReasons).toEqual([]);
@@ -1899,11 +1991,11 @@ describe('WorkflowEngine structured caller defaults', () => {
               name: 'architecture-review',
               persona: 'architecture-reviewer',
               instruction: 'Review architecture.',
-              rules: [makeRule('true', 'COMPLETE')],
+              rules: [makeRule('when(true)', 'COMPLETE')],
             }),
           ],
           rules: [
-            makeRule('findings.open.count == 0', 'COMPLETE'),
+            makeRule('when(findings.open.count == 0)', 'COMPLETE'),
           ],
         }),
       ],
@@ -2073,20 +2165,20 @@ describe('WorkflowEngine structured caller defaults', () => {
               name: 'architecture-review',
               persona: 'architecture-reviewer',
               instruction: 'Review architecture.',
-              rules: [makeRule('true', 'COMPLETE')],
+              rules: [makeRule('when(true)', 'COMPLETE')],
             }),
             makeStep({
               name: 'security-review',
               persona: 'security-reviewer',
               instruction: 'Review security.',
-              rules: [makeRule('true', 'COMPLETE')],
+              rules: [makeRule('when(true)', 'COMPLETE')],
             }),
           ],
           rules: [
-            makeRule('findings.open.bySeverity.high > 0', 'COMPLETE'),
-            makeRule('findings.open.count == 0', 'ABORT'),
+            makeRule('when(findings.open.bySeverity.high > 0)', 'COMPLETE'),
+            makeRule('when(findings.open.count == 0)', 'ABORT'),
             {
-              condition: 'findings.conflicts.count > 0',
+              condition: 'when(findings.conflicts.count > 0)',
               returnValue: 'need_replan',
             },
           ],
@@ -2095,7 +2187,7 @@ describe('WorkflowEngine structured caller defaults', () => {
           name: 'fix',
           persona: 'coder',
           instruction: 'Fix.',
-          rules: [makeRule('true', 'COMPLETE')],
+          rules: [makeRule('when(true)', 'COMPLETE')],
         }),
       ],
     };
@@ -2248,14 +2340,14 @@ describe('WorkflowEngine structured caller defaults', () => {
               name: 'architecture-review',
               persona: 'architecture-reviewer',
               instruction: 'Review architecture.',
-              rules: [makeRule('true', 'COMPLETE')],
+              rules: [makeRule('when(true)', 'COMPLETE')],
             }),
           ],
           rules: [
-            makeRule('findings.open.bySeverity.high > 0', 'COMPLETE'),
-            makeRule('findings.open.count == 0', 'ABORT'),
+            makeRule('when(findings.open.bySeverity.high > 0)', 'COMPLETE'),
+            makeRule('when(findings.open.count == 0)', 'ABORT'),
             {
-              condition: 'findings.conflicts.count > 0',
+              condition: 'when(findings.conflicts.count > 0)',
               returnValue: 'need_replan',
             },
           ],
@@ -2316,13 +2408,13 @@ describe('WorkflowEngine structured caller defaults', () => {
               name: 'architecture-review',
               persona: 'architecture-reviewer',
               instruction: 'Review architecture.',
-              rules: [makeRule('true', 'COMPLETE')],
+              rules: [makeRule('when(true)', 'COMPLETE')],
             }),
           ],
           rules: [
-            makeRule('findings.open.count == 0', 'COMPLETE'),
+            makeRule('when(findings.open.count == 0)', 'COMPLETE'),
             {
-              condition: 'findings.conflicts.count > 0',
+              condition: 'when(findings.conflicts.count > 0)',
               returnValue: 'need_replan',
             },
           ],
@@ -2400,7 +2492,7 @@ describe('WorkflowEngine structured caller defaults', () => {
           persona: 'reviewer',
           instruction: 'Review.',
           outputContracts: [{ name: 'review.md', format: 'Write review.' }],
-          rules: [makeRule('true', 'COMPLETE')],
+          rules: [makeRule('when(true)', 'COMPLETE')],
         }),
       ],
     };
@@ -2536,25 +2628,25 @@ describe('WorkflowEngine structured caller defaults', () => {
               name: 'architecture-review',
               persona: 'architecture-reviewer',
               instruction: 'Review architecture.',
-              rules: [makeRule('true', 'COMPLETE')],
+              rules: [makeRule('when(true)', 'COMPLETE')],
             }),
             makeStep({
               name: 'security-review',
               persona: 'security-reviewer',
               instruction: 'Review security.',
-              rules: [makeRule('true', 'COMPLETE')],
+              rules: [makeRule('when(true)', 'COMPLETE')],
             }),
           ],
           rules: [
-            makeRule('findings.open.count == 0', 'COMPLETE'),
-            makeRule('findings.open.bySeverity.high > 0', 'fix'),
+            makeRule('when(findings.open.count == 0)', 'COMPLETE'),
+            makeRule('when(findings.open.bySeverity.high > 0)', 'fix'),
           ],
         }),
         makeStep({
           name: 'fix',
           persona: 'coder',
           instruction: 'Fix.',
-          rules: [makeRule('true', 'COMPLETE')],
+          rules: [makeRule('when(true)', 'COMPLETE')],
         }),
       ],
     };
