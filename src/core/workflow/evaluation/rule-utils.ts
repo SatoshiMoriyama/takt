@@ -195,4 +195,3 @@ export function isJudgeableRule(rule: WorkflowRule | undefined, interactive: boo
   if (rule.interactiveOnly && !interactive) return false;
   return !isDeterministicCondition(rule.condition);
 }
-

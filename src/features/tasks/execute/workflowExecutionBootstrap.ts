@@ -31,6 +31,8 @@ import { sanitizeTerminalText } from '../../../shared/utils/text.js';
 import { createUsageEventLogger, isUsageEventsEnabled } from '../../../shared/utils/usageEventLogger.js';
 import { initializeOtelFoundation, type OtelFoundationHandle } from '../../../infra/observability/otelFoundation.js';
 import { PHASE_USAGE_EVENTS_LOG_FILE_SUFFIX } from '../../../core/logging/contracts.js';
+import { applyAutoRoutingStrategyOverride } from '../../../core/workflow/auto-routing/resolver.js';
+import { workflowUsesAutoProvider } from '../../../core/workflow/auto-routing/workflow-auto-provider.js';
 import { initAnalyticsWriter } from '../../analytics/index.js';
 import { ensureWorktreeTaktGitignore } from '../../../infra/task/projectLocalTaktSync.js';
 import { AnalyticsEmitter } from './analyticsEmitter.js';
@@ -72,6 +74,7 @@ export interface WorkflowExecutionBootstrap {
   configuredModel: string | undefined;
   configuredModelSource: ProviderResolutionSource;
   effectiveWorkflowConfig: WorkflowConfig;
+  autoStrategyOverride: WorkflowExecutionOptions['autoStrategy'];
   providerEventLogger: ReturnType<typeof createProviderEventLogger>;
   usageEventLogger: ReturnType<typeof createUsageEventLogger>;
   observability: ResolvedObservabilityConfig;
@@ -145,7 +148,9 @@ export async function createWorkflowExecutionBootstrap(
     'model',
     'logging',
     'analytics',
+    'telemetry',
     'observability',
+    'autoRouting',
   ]);
   const traceReportMode = globalConfig.logging?.trace === true ? 'full' : 'redacted';
   const allowSensitiveData = traceReportMode === 'full';
@@ -185,15 +190,27 @@ export async function createWorkflowExecutionBootstrap(
   const shouldNotifyRateLimit = shouldNotify;
   const shouldNotifyWorkflowComplete = shouldNotify && globalConfig.notificationSoundEvents?.workflowComplete !== false;
   const shouldNotifyWorkflowAbort = shouldNotify && globalConfig.notificationSoundEvents?.workflowAbort !== false;
-  const currentProvider = options.provider ?? globalConfig.provider;
+  const currentProvider = options.provider ?? workflowConfig.provider ?? globalConfig.provider;
   if (!currentProvider) {
     throw new Error('No provider configured. Set "provider" in ~/.takt/config.yaml');
+  }
+  const autoStrategyApplies = workflowUsesAutoProvider({
+    workflowConfig,
+    effectiveProvider: currentProvider,
+    cliProvider: options.provider,
+    projectCwd,
+    lookupCwd: cwd,
+    workflowCallResolver: options.workflowCallResolver,
+  });
+  if (options.autoStrategy !== undefined && !autoStrategyApplies) {
+    log.warn('--auto-strategy is ignored unless the effective provider is auto');
   }
   const currentProviderSource = resolveProviderFieldSource(
     projectCwd,
     'provider',
     options.provider,
     options.providerSource,
+    workflowConfig.provider,
   );
 
   const configuredModel = options.model ?? globalConfig.model;
@@ -203,8 +220,13 @@ export async function createWorkflowExecutionBootstrap(
     options.model,
     options.modelSource,
   );
+  const resolvedAutoRouting = autoStrategyApplies
+    ? applyAutoRoutingStrategyOverride(workflowConfig.autoRouting ?? globalConfig.autoRouting, options.autoStrategy)
+    : workflowConfig.autoRouting ?? globalConfig.autoRouting;
+  const autoStrategyOverride = autoStrategyApplies ? options.autoStrategy : undefined;
   const effectiveWorkflowConfig: WorkflowConfig = {
     ...workflowConfig,
+    autoRouting: resolvedAutoRouting,
     rateLimitFallback: workflowConfig.rateLimitFallback ?? globalConfig.rateLimitFallback,
     runtime: resolveRuntimeConfig(globalConfig.runtime, workflowConfig.runtime),
     ...(options.maxStepsOverride !== undefined ? { maxSteps: options.maxStepsOverride } : {}),
@@ -228,15 +250,25 @@ export async function createWorkflowExecutionBootstrap(
     enabled: isUsageEventsEnabled(globalConfig),
   });
 
+  const analyticsWriterOptions = globalConfig.telemetry?.routingDecisions === true
+    ? { routingEventsDir: join(projectCwd, '.takt', 'events') }
+    : undefined;
   initAnalyticsWriter(
     globalConfig.analytics?.enabled === true,
     globalConfig.analytics?.eventsPath ?? join(getGlobalConfigDir(), 'analytics', 'events'),
+    analyticsWriterOptions,
   );
   if (globalConfig.preventSleep) {
     preventSleep();
   }
 
-  const analyticsEmitter = new AnalyticsEmitter(runSlug, currentProvider, configuredModel ?? '(default)');
+  const analyticsEmitter = new AnalyticsEmitter(
+    runSlug,
+    currentProvider,
+    configuredModel ?? '(default)',
+    workflowConfig.name,
+    workflowSessionId,
+  );
   const structuredCaller = new CapabilityAwareStructuredCaller();
   const savedSessions = isRetry
     ? (isWorktree
@@ -321,6 +353,7 @@ export async function createWorkflowExecutionBootstrap(
     configuredModel,
     configuredModelSource,
     effectiveWorkflowConfig,
+    autoStrategyOverride,
     providerEventLogger,
     usageEventLogger,
     observability: globalConfig.observability,
@@ -342,7 +375,7 @@ function mapConfigSourceToResolutionSource(source: ConfigValueSource): ProviderR
     case 'default':
       return 'default';
     default:
-      // 'env' / 'workflow' do not occur for provider/model in bootstrap context.
+      // 'env' does not occur for provider/model in bootstrap context.
       return 'default';
   }
 }
@@ -352,9 +385,13 @@ function resolveProviderFieldSource(
   key: 'provider' | 'model',
   cliValue: string | undefined,
   cliSource: ProviderResolutionSource | undefined,
+  workflowValue?: string,
 ): ProviderResolutionSource {
   if (cliValue !== undefined) {
     return cliSource ?? 'cli';
+  }
+  if (workflowValue !== undefined) {
+    return 'workflow';
   }
   try {
     const resolved = resolveConfigValueWithSource(projectCwd, key);

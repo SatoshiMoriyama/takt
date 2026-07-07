@@ -14,13 +14,7 @@ import type {
 import { resolveLoopMonitorJudgeProviderModel, resolveStepProviderModel } from '../../../core/workflow/provider-resolution.js';
 import { validateProviderModelRequirements } from '../../../core/workflow/provider-model-requirements.js';
 import { hasUnquotedFindingsReference, isFindingsCondition } from '../../../core/workflow/evaluation/rule-utils.js';
-
-function ruleReferencesFindings(rule: { condition: string; aggregateGuardCondition?: string; guardCondition?: string }): boolean {
-  return isFindingsCondition(rule.condition)
-    || (rule.aggregateGuardCondition !== undefined && hasUnquotedFindingsReference(rule.aggregateGuardCondition))
-    || (rule.guardCondition !== undefined && hasUnquotedFindingsReference(rule.guardCondition));
-}
-import { normalizeRateLimitFallback, normalizeRuntime } from '../configNormalizers.js';
+import { normalizeAutoRoutingConfig, normalizeRateLimitFallback, normalizeRuntime } from '../configNormalizers.js';
 import type { FacetResolutionContext, WorkflowSections } from './resource-resolver.js';
 import {
   extractPersonaDisplayName,
@@ -40,6 +34,12 @@ import {
   type WorkflowCallArgResolutionPolicy,
 } from './workflowCallableArgResolver.js';
 import { prepareCallableSubworkflowDiscoveryArgs } from './workflowCallableDiscoveryArgs.js';
+
+function ruleReferencesFindings(rule: { condition: string; aggregateGuardCondition?: string; guardCondition?: string }): boolean {
+  return isFindingsCondition(rule.condition)
+    || (rule.aggregateGuardCondition !== undefined && hasUnquotedFindingsReference(rule.aggregateGuardCondition))
+    || (rule.guardCondition !== undefined && hasUnquotedFindingsReference(rule.guardCondition));
+}
 
 function normalizeSubworkflowConfig(
   raw: ReturnType<typeof WorkflowConfigRawSchema.parse>['subworkflow'],
@@ -264,6 +264,7 @@ export function normalizeWorkflowConfig(
     provider: normalizedWorkflowProvider.provider,
     model: normalizedWorkflowProvider.model,
     providerOptions: normalizedWorkflowProvider.providerOptions,
+    autoRouting: normalizeAutoRoutingConfig(parsed.auto_routing, { baseUrlTrust: 'loopback-only' }),
     rateLimitFallback: normalizeRateLimitFallback(parsed.rate_limit_fallback),
     runtime: workflowRuntime,
     personas: parsed.personas,

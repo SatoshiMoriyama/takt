@@ -24,6 +24,7 @@ import {
 } from '../../infra/config/index.js';
 import { resolvePersonaSessionId } from '../../infra/config/project/sessionStore.js';
 import { resolveAssistantProviderModelFromConfig } from '../../core/config/provider-resolution.js';
+import { toConcreteProvider } from '../../core/workflow/provider-resolution.js';
 import { resolveAssistantConfigLayers } from '../../features/interactive/assistantConfig.js';
 import { program, resolvedCwd, pipelineMode } from './program.js';
 import { resolveAgentOverrides, resolveWorkflowCliOption } from './helpers.js';
@@ -85,6 +86,7 @@ export async function executeDefaultAction(task?: string): Promise<void> {
       cwd: resolvedCwd,
       provider: agentOverrides?.provider,
       model: agentOverrides?.model,
+      autoStrategy: agentOverrides?.autoStrategy,
     });
 
     if (exitCode !== 0) {
@@ -183,23 +185,24 @@ export async function executeDefaultAction(task?: string): Promise<void> {
     }
     : undefined;
   let result: InteractiveModeResult;
+  const assistantOverrideProvider = toConcreteProvider(agentOverrides?.provider);
 
   switch (selectedMode) {
     case 'assistant': {
       let selectedSessionId: string | undefined;
       if (opts.continue === true) {
-        const { provider: providerType } = resolveAssistantProviderModelFromConfig(
+        const { provider } = resolveAssistantProviderModelFromConfig(
           resolveAssistantConfigLayers(resolvedCwd),
           {
-            provider: agentOverrides?.provider,
+            provider: assistantOverrideProvider,
             model: agentOverrides?.model,
           },
         );
-        if (!providerType) {
+        if (!provider) {
           throw new Error('Provider is not configured.');
         }
-        const savedSessions = loadPersonaSessions(resolvedCwd, providerType);
-        const savedSessionId = resolvePersonaSessionId(savedSessions, 'interactive', providerType);
+        const savedSessions = loadPersonaSessions(resolvedCwd, provider);
+        const savedSessionId = resolvePersonaSessionId(savedSessions, 'interactive', provider);
         if (savedSessionId) {
           selectedSessionId = savedSessionId;
         } else {
@@ -209,7 +212,7 @@ export async function executeDefaultAction(task?: string): Promise<void> {
       const interactiveOpts = prBranch ? { excludeActions: ['create_issue'] as const } : undefined;
       const assistantModeOptions = {
         ...interactiveOpts,
-        ...(agentOverrides?.provider ? { provider: agentOverrides.provider } : {}),
+        ...(assistantOverrideProvider ? { provider: assistantOverrideProvider } : {}),
         ...(agentOverrides?.model ? { model: agentOverrides.model } : {}),
       };
       result = await interactiveMode(

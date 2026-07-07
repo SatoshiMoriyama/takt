@@ -1,4 +1,5 @@
 import type { ProviderType } from '../../shared/types/provider.js';
+import type { AutoRoutingConfig, ProviderTypeOrAuto } from './config-types.js';
 import type { PermissionMode } from './status.js';
 import type { AgentResponse } from './response.js';
 import type { InteractiveMode } from './interactive-mode.js';
@@ -173,7 +174,7 @@ interface AgentWorkflowStepBase extends WorkflowStepBase {
   allowGitCommit?: boolean;
   mcpServers?: Record<string, McpServerConfig>;
   personaPath?: string;
-  provider?: ProviderType;
+  provider?: ProviderTypeOrAuto;
   providerSpecified?: boolean;
   model?: string;
   modelSpecified?: boolean;
@@ -188,6 +189,10 @@ interface AgentWorkflowStepBase extends WorkflowStepBase {
   systemInputs?: never;
   effects?: never;
   outputContracts?: OutputContractEntry[];
+  parallel?: WorkflowStep[];
+  concurrency?: number;
+  arpeggio?: ArpeggioStepConfig;
+  teamLeader?: TeamLeaderConfig;
   policyContents?: string[];
   knowledgeContents?: string[];
 }
@@ -202,7 +207,7 @@ export interface NormalAgentWorkflowStep extends AgentWorkflowStepBase {
 
 export interface ParallelWorkflowStep extends AgentWorkflowStepBase {
   session?: never;
-  parallel: NormalAgentWorkflowStep[];
+  parallel: WorkflowStep[];
   concurrency?: number;
   arpeggio?: never;
   teamLeader?: never;
@@ -350,9 +355,10 @@ export interface WorkflowConfig {
   subworkflow?: WorkflowSubworkflowConfig;
   findingContract?: FindingContractConfig;
   schemas?: Record<string, string>;
-  provider?: ProviderType;
+  provider?: ProviderTypeOrAuto;
   model?: string;
   providerOptions?: StepProviderOptions;
+  autoRouting?: AutoRoutingConfig;
   rateLimitFallback?: RateLimitFallbackConfig;
   runtime?: WorkflowRuntimeConfig;
   personas?: Record<string, string>;

@@ -127,4 +127,3 @@ export class ToolErrorBudgetDetector {
     return `OpenCode tool error budget exceeded (${this.totalToolErrors} tool errors in one call; last tool "${tool}"): ${message}`;
   }
 }
-

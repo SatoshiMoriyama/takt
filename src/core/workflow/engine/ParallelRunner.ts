@@ -14,6 +14,7 @@ import type {
   WorkflowResumePointEntry,
 } from '../../models/types.js';
 import { executeAgent } from '../../../agents/agent-usecases.js';
+import { isWorkflowCallStep } from '../step-kind.js';
 import { ParallelLogger } from './parallel-logger.js';
 import { needsStatusJudgmentPhase, runReportPhase, ReportPhaseGenerationError, runStatusJudgmentPhase } from '../phase-runner.js';
 import { detectMatchedRule } from '../evaluation/index.js';
@@ -30,6 +31,7 @@ import type { RuntimeStepResolution } from '../types.js';
 import type { ParallelLoggerOptions } from './parallel-logger.js';
 import type { StructuredCaller } from '../../../agents/structured-caller.js';
 import { runWithPhaseSpan } from '../observability/workflowSpans.js';
+import { resolveAutoRoutingBatch } from '../auto-routing/resolver.js';
 import type { QualityGateRunResult } from '../quality-gates/types.js';
 import { buildPhaseExecutionId } from '../../../shared/utils/phaseExecutionId.js';
 import { sanitizeSensitiveText } from '../../../shared/utils/sensitiveText.js';
@@ -42,19 +44,49 @@ import {
 } from '../findings/manager-runner.js';
 import { ledgerHasOpenFindings, ledgerHasWaivedFindings, renderFindingLedgerInstructionSummary, renderFindingLedgerReportSummary } from '../findings/context.js';
 import { isNonAiReturnValueRule } from '../evaluation/rule-utils.js';
+import type { WorkflowCallRunner } from './WorkflowCallRunner.js';
+import type { WorkflowCallIsolatedStateSync, WorkflowCallSessionUpdates } from './WorkflowCallExecutor.js';
 import { compactSessionBeforePhase1 } from './session-compaction.js';
 
 const log = createLogger('parallel-runner');
 
 type ParallelSubStepResult = {
-  subStep: AgentWorkflowStep;
+  subStep: WorkflowStep;
   response: AgentResponse;
   instruction: string;
   providerInfo?: StepRunResult['providerInfo'];
+  durationMs?: number;
   qualityGateFailure?: boolean;
+  workflowCallSessionUpdates?: WorkflowCallSessionUpdates;
+  workflowCallStateSync?: WorkflowCallIsolatedStateSync;
+  workflowCallExecutionRejected?: boolean;
 };
 
 type ParallelTerminalStatus = 'error' | 'blocked' | 'rate_limited';
+
+function isAgentParallelSubStep(step: WorkflowStep): step is AgentWorkflowStep {
+  return !isWorkflowCallStep(step) && step.kind !== 'system';
+}
+
+function mergeTerminalCorrectionResponse(
+  originalResponse: AgentResponse,
+  correctionResponse: AgentResponse,
+): AgentResponse {
+  const baseResponse = { ...originalResponse };
+  delete baseResponse.error;
+  delete baseResponse.errorKind;
+  delete baseResponse.rateLimitInfo;
+  return {
+    ...baseResponse,
+    status: correctionResponse.status,
+    timestamp: correctionResponse.timestamp,
+    ...(correctionResponse.error !== undefined ? { error: correctionResponse.error } : {}),
+    ...(correctionResponse.errorKind !== undefined ? { errorKind: correctionResponse.errorKind } : {}),
+    ...(correctionResponse.rateLimitInfo !== undefined ? { rateLimitInfo: correctionResponse.rateLimitInfo } : {}),
+    ...(correctionResponse.sessionId !== undefined ? { sessionId: correctionResponse.sessionId } : {}),
+    ...(correctionResponse.providerUsage !== undefined ? { providerUsage: correctionResponse.providerUsage } : {}),
+  };
+}
 
 /**
  * Simple semaphore for controlling concurrency.
@@ -105,6 +137,9 @@ export interface ParallelRunnerDeps {
   readonly emitEvent: (event: string, ...args: unknown[]) => void;
   readonly findingContract?: FindingContractConfig;
   readonly findingLedgerStore?: FindingLedgerStore;
+  readonly getWorkflowCallRunner?: () => WorkflowCallRunner;
+  readonly updateMaxSteps: (maxSteps: WorkflowMaxSteps) => void;
+  readonly setActiveResumePoint: (step: WorkflowStep, iteration: number) => void;
   readonly getRunId: () => string;
   readonly runQualityGates: (options: {
     qualityGates: WorkflowStep['qualityGates'];
@@ -200,16 +235,52 @@ export class ParallelRunner {
       log.debug('Concurrency limit enabled', { step: step.name, concurrency: step.concurrency });
     }
     const findingLedgerCopyPath = this.prepareFindingContractLedgerCopy();
+    const agentSubSteps = subSteps.filter(isAgentParallelSubStep);
+    const routedProviderInfoByStep = this.deps.engineOptions.autoRouting
+      ? await resolveAutoRoutingBatch({
+          autoRouting: this.deps.engineOptions.autoRouting,
+          items: agentSubSteps.map((subStep) => ({
+            id: subStep.name,
+            step: {
+              name: subStep.name,
+              tags: subStep.tags,
+              personaKey: subStep.providerRoutingPersonaKey,
+              instruction: subStep.instruction,
+            },
+            currentProviderInfo: this.deps.optionsBuilder.resolveStepProviderModel(subStep, runtime),
+          })),
+          routeBatchWithAi: this.deps.engineOptions.autoRoutingAiRouter?.routeBatch,
+          logger: log,
+        })
+      : new Map();
 
     // Run all sub-steps concurrently (failures are captured, not thrown)
     // When semaphore is set, at most `concurrency` sub-steps execute simultaneously.
+    const subStepStartedAtByName = new Map<string, number>();
+    const subStepInstructionByName = new Map<string, string>();
     const settled = await Promise.allSettled(
       subSteps.map(async (subStep, index) => {
         if (semaphore) {
           await semaphore.acquire();
         }
+        const startedAt = Date.now();
+        subStepStartedAtByName.set(subStep.name, startedAt);
         try {
+          if (isWorkflowCallStep(subStep)) {
+            subStepInstructionByName.set(subStep.name, '');
+            return await this.runWorkflowCallSubStep(subStep, state, runtime, startedAt);
+          }
+          if (!isAgentParallelSubStep(subStep)) {
+            throw new Error(`Unsupported parallel sub-step kind for "${subStep.name}"`);
+          }
+
           const executableSubStep = this.withFindingContractStructuredOutput(subStep, findingLedgerCopyPath);
+          const subRuntime = routedProviderInfoByStep.has(subStep.name)
+            ? {
+                ...runtime,
+                providerInfo: routedProviderInfoByStep.get(subStep.name)!,
+              }
+            : runtime;
           const subIteration = incrementStepIteration(state, subStep.name);
           const subInstruction = this.deps.stepExecutor.buildInstruction(
             executableSubStep,
@@ -217,7 +288,7 @@ export class ParallelRunner {
             state,
             task,
             maxSteps,
-            runtime?.fallback,
+            subRuntime?.fallback,
             findingLedgerCopyPath
               ? {
                   ledgerCopyPath: findingLedgerCopyPath,
@@ -230,11 +301,12 @@ export class ParallelRunner {
               : undefined,
           );
           const phase1Instruction = findingLedgerCopyPath
-            ? this.deps.stepExecutor.buildPhase1Instruction(subInstruction, executableSubStep, runtime)
+            ? this.deps.stepExecutor.buildPhase1Instruction(subInstruction, executableSubStep, subRuntime)
             : subInstruction;
+          subStepInstructionByName.set(subStep.name, phase1Instruction);
           const parentIteration = state.iteration;
-          const subPm = runtime
-            ? this.deps.optionsBuilder.resolveStepProviderModel(executableSubStep, runtime)
+          const subPm = subRuntime
+            ? this.deps.optionsBuilder.resolveStepProviderModel(executableSubStep, subRuntime)
             : this.deps.optionsBuilder.resolveStepProviderModel(executableSubStep);
           const subRuleCtx = {
             ...parentRuleCtx,
@@ -248,7 +320,7 @@ export class ParallelRunner {
         const subSessionKey = buildSessionKey(executableSubStep, subPm.provider);
 
         // Phase 1: main execution (Write excluded if sub-step has report)
-        const baseOptions = this.deps.optionsBuilder.buildAgentOptions(executableSubStep, runtime);
+        const baseOptions = this.deps.optionsBuilder.buildAgentOptions(executableSubStep, subRuntime);
         await compactSessionBeforePhase1(executableSubStep, baseOptions);
         let didEmitPhaseStart = false;
         let resolvedPromptParts: PhasePromptParts | undefined;
@@ -344,7 +416,11 @@ export class ParallelRunner {
           }
         }
         if (findingLedgerCopyPath) {
-          const normalized = this.deps.stepExecutor.normalizeStructuredOutputWithDiagnostics(executableSubStep, subResponse, runtime);
+          const normalized = this.deps.stepExecutor.normalizeStructuredOutputWithDiagnostics(
+            executableSubStep,
+            subResponse,
+            subRuntime,
+          );
           subResponse = normalized.response;
           if (normalized.invalidDetail !== undefined) {
             // 弱いモデルは大きな構造化出力で JSON を壊しやすい。1回だけ
@@ -376,12 +452,12 @@ export class ParallelRunner {
             const renormalized = this.deps.stepExecutor.normalizeStructuredOutputWithDiagnostics(
               executableSubStep,
               correctiveResponse,
-              runtime,
+              subRuntime,
             );
             if (correctiveResponse.status === 'rate_limited' || correctiveResponse.status === 'blocked') {
               // レート制限・ブロックは専用フロー（メタデータ伝播・バックオフ）
-              // が上位にあるため、error に潰さずそのまま伝える。
-              subResponse = correctiveResponse;
+              // が上位にあるため、error に潰さず、Phase 1 本文を保持して伝える。
+              subResponse = mergeTerminalCorrectionResponse(subResponse, correctiveResponse);
             } else if (renormalized.invalidDetail !== undefined || renormalized.response.status !== 'done') {
               subResponse = {
                 ...subResponse,
@@ -414,7 +490,13 @@ export class ParallelRunner {
         }
         if (subResponse.status === 'error' || subResponse.status === 'blocked' || subResponse.status === 'rate_limited') {
           state.stepOutputs.set(subStep.name, subResponse);
-          return { subStep, response: subResponse, instruction: phase1Instruction, providerInfo: subPm };
+          return {
+            subStep,
+            response: subResponse,
+            instruction: phase1Instruction,
+            providerInfo: subPm,
+            durationMs: Math.max(0, subResponse.timestamp.getTime() - startedAt),
+          };
         }
 
         // Phase 2/3 context resolves the same runtime-aware session key as Phase 1.
@@ -426,7 +508,7 @@ export class ParallelRunner {
           this.deps.onPhaseComplete,
           this.deps.onJudgeStage,
           parentIteration,
-          runtime,
+          subRuntime,
         );
 
         // Phase 2: report output for sub-step
@@ -440,7 +522,13 @@ export class ParallelRunner {
                 content: reportResult.response.content,
               };
               state.stepOutputs.set(subStep.name, blockedResponse);
-              return { subStep, response: blockedResponse, instruction: phase1Instruction, providerInfo: subPm };
+              return {
+                subStep,
+                response: blockedResponse,
+                instruction: phase1Instruction,
+                providerInfo: subPm,
+                durationMs: Math.max(0, blockedResponse.timestamp.getTime() - startedAt),
+              };
             }
             if (reportResult && 'rateLimited' in reportResult) {
               const rateLimitedResponse: AgentResponse = {
@@ -448,7 +536,13 @@ export class ParallelRunner {
                 persona: subStep.name,
               };
               state.stepOutputs.set(subStep.name, rateLimitedResponse);
-              return { subStep, response: rateLimitedResponse, instruction: phase1Instruction, providerInfo: subPm };
+              return {
+                subStep,
+                response: rateLimitedResponse,
+                instruction: phase1Instruction,
+                providerInfo: subPm,
+                durationMs: Math.max(0, rateLimitedResponse.timestamp.getTime() - startedAt),
+              };
             }
           } catch (reportError) {
             if (reportError instanceof ReportPhaseGenerationError) {
@@ -517,6 +611,7 @@ export class ParallelRunner {
             response: qualityGateResult.response,
             instruction: phase1Instruction,
             providerInfo: subPm,
+            durationMs: Math.max(0, qualityGateResult.response.timestamp.getTime() - startedAt),
             qualityGateFailure: true,
           };
         }
@@ -524,7 +619,13 @@ export class ParallelRunner {
         state.stepOutputs.set(subStep.name, finalResponse);
         this.deps.stepExecutor.emitStepReports(subStep);
 
-        return { subStep, response: finalResponse, instruction: phase1Instruction, providerInfo: subPm };
+        return {
+          subStep,
+          response: finalResponse,
+          instruction: phase1Instruction,
+          providerInfo: subPm,
+          durationMs: Math.max(0, finalResponse.timestamp.getTime() - startedAt),
+        };
         } finally {
           if (semaphore) {
             semaphore.release();
@@ -549,8 +650,21 @@ export class ParallelRunner {
         error: errorMsg,
       };
       state.stepOutputs.set(failedStep.name, errorResponse);
-      return { subStep: failedStep, response: errorResponse, instruction: '', providerInfo: undefined };
+      const startedAt = subStepStartedAtByName.get(failedStep.name);
+      const instruction = subStepInstructionByName.get(failedStep.name);
+      return {
+        subStep: failedStep,
+        response: errorResponse,
+        instruction: instruction === undefined ? '' : instruction,
+        providerInfo: routedProviderInfoByStep.get(failedStep.name),
+        durationMs: startedAt === undefined
+          ? 0
+          : Math.max(0, errorResponse.timestamp.getTime() - startedAt),
+        ...(isWorkflowCallStep(failedStep) ? { workflowCallExecutionRejected: true } : {}),
+      };
     });
+    this.mergeWorkflowCallSubStepEffects(step, subResults, state, updatePersonaSession);
+    this.emitSubStepRoutingDecisionEvents(subResults, state.iteration);
 
     const terminalResults = this.collectTerminalResults(subResults);
     const rateLimitedResult = terminalResults.find((r) => r.response.status === 'rate_limited');
@@ -675,6 +789,71 @@ export class ParallelRunner {
     return { response: aggregatedResponse, instruction: aggregatedInstruction, providerInfo: parentPm };
   }
 
+  private async runWorkflowCallSubStep(
+    subStep: WorkflowStep,
+    state: WorkflowState,
+    runtime: RuntimeStepResolution | undefined,
+    startedAt: number,
+  ): Promise<ParallelSubStepResult> {
+    if (!isWorkflowCallStep(subStep)) {
+      throw new Error(`Parallel sub-step "${subStep.name}" is not a workflow_call`);
+    }
+
+    incrementStepIteration(state, subStep.name);
+    const workflowCallRunner = this.deps.getWorkflowCallRunner?.();
+    if (!workflowCallRunner) {
+      throw new Error(`Parallel workflow_call sub-step "${subStep.name}" requires workflowCallRunner`);
+    }
+    const subRuntime = runtime?.fallback
+      ? runtime
+      : workflowCallRunner.resolveRuntime(subStep);
+    const result = await workflowCallRunner.runIsolated(subStep, subRuntime);
+    return {
+      subStep,
+      response: result.result.response,
+      instruction: result.result.instruction,
+      providerInfo: result.result.providerInfo,
+      durationMs: Math.max(0, result.result.response.timestamp.getTime() - startedAt),
+      workflowCallSessionUpdates: result.sessionUpdates,
+      workflowCallStateSync: result.stateSync,
+    };
+  }
+
+  private mergeWorkflowCallSubStepEffects(
+    step: WorkflowStep,
+    subResults: ParallelSubStepResult[],
+    state: WorkflowState,
+    updatePersonaSession: (persona: string, sessionId: string | undefined) => void,
+  ): void {
+    let didSyncWorkflowCallState = false;
+    for (const result of subResults) {
+      if (!isWorkflowCallStep(result.subStep)) {
+        continue;
+      }
+      state.stepOutputs.set(result.subStep.name, result.response);
+      if (result.workflowCallExecutionRejected) {
+        continue;
+      }
+      if (!result.workflowCallSessionUpdates) {
+        throw new Error(`Parallel workflow_call sub-step "${result.subStep.name}" did not return session updates`);
+      }
+      if (!result.workflowCallStateSync) {
+        throw new Error(`Parallel workflow_call sub-step "${result.subStep.name}" did not return state sync`);
+      }
+      state.iteration = Math.max(state.iteration, result.workflowCallStateSync.iteration);
+      if (result.workflowCallStateSync.maxSteps !== undefined) {
+        this.deps.updateMaxSteps(result.workflowCallStateSync.maxSteps);
+      }
+      didSyncWorkflowCallState = true;
+      for (const [sessionKey, sessionId] of result.workflowCallSessionUpdates) {
+        updatePersonaSession(sessionKey, sessionId);
+      }
+    }
+    if (didSyncWorkflowCallState) {
+      this.deps.setActiveResumePoint(step, state.iteration);
+    }
+  }
+
   private async runFindingContractManager(
     step: WorkflowStep,
     stepIteration: number,
@@ -707,6 +886,26 @@ export class ParallelRunner {
       this.deps.emitEvent('findings:ledger', result.ledger);
     }
     return result;
+  }
+
+  private emitSubStepRoutingDecisionEvents(subResults: ParallelSubStepResult[], iteration: number): void {
+    for (const result of subResults) {
+      const providerInfo = result.providerInfo;
+      if (providerInfo?.autoRoutingDecision === undefined) {
+        continue;
+      }
+      this.deps.emitEvent(
+        'routing:decision',
+        result.subStep,
+        result.response,
+        result.instruction,
+        providerInfo,
+        'parallel',
+        result.durationMs ?? 0,
+        iteration,
+        this.deps.getWorkflowName(),
+      );
+    }
   }
 
   private prepareFindingContractLedgerCopy(): string | undefined {
