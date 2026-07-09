@@ -296,6 +296,92 @@ export async function getOpenCodeSessionSnapshot(
 
 export type OpenCodeSessionMessages = NonNullable<Awaited<ReturnType<OpencodeClient['session']['messages']>>['data']>;
 
+/** レート制限を示す HTTP ステータス。プロバイダは 429 を返す。 */
+const RATE_LIMIT_STATUS_CODE = 429;
+
+/**
+ * 検死 RPC の上限。検死自体がハングして再度の無限待ちを招かないようにする。
+ * 呼び出し時に評価する（テストで env から上書きできるようにする）。
+ */
+function resolvePostmortemTimeoutMs(): number {
+  const fromEnv = Number(process.env.TAKT_OPENCODE_POSTMORTEM_TIMEOUT_MS);
+  return fromEnv > 0 ? fromEnv : 5000;
+}
+
+/** statusCode は数値でも文字列でも来うるため正規化する。 */
+function extractStatusCode(error: unknown): number | undefined {
+  if (!error || typeof error !== 'object') {
+    return undefined;
+  }
+  const data = (error as { data?: { statusCode?: unknown } }).data;
+  const raw = data?.statusCode;
+  if (typeof raw === 'number') {
+    return raw;
+  }
+  if (typeof raw === 'string') {
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * 直近の assistant メッセージのエラーを検死し、レート制限ならその内容を返す。
+ *
+ * OpenCode サーバはプロバイダの 429 を内部リトライで握り、イベントバスへ
+ * session.error を流さない。takt からは「無音のまま停止したセッション」に
+ * 見えるため、無音ウォッチドッグのタイムアウト後にここで死因を確かめる。
+ *
+ * 判定するのは「最新の assistant メッセージ」だけに限る。sessionId は phase や
+ * resume で再利用されるため、過去の assistant に残る古い 429 を今回の死因と
+ * 誤認しないようにする。
+ */
+async function postmortemRateLimitError(
+  client: OpencodeClient,
+  sessionID: string,
+  directory: string,
+): Promise<string | undefined> {
+  let messages: OpenCodeSessionMessages;
+  try {
+    const result = await withTimeout(
+      (signal) => client.session.messages({ sessionID, directory }, { signal }),
+      resolvePostmortemTimeoutMs(),
+      'OpenCode rate limit postmortem timed out',
+    );
+    if (!result.data) {
+      return undefined;
+    }
+    messages = result.data;
+  } catch (error) {
+    // 検死そのものの失敗（RPC エラー・ハング）で本来のエラーを覆い隠さない。
+    log.debug('Rate limit postmortem could not read session messages', {
+      sessionID,
+      error: getErrorMessage(error),
+    });
+    return undefined;
+  }
+
+  // 末尾が assistant でないなら、今回のターンの応答はまだ作られていない。
+  // ここで過去へ遡ると、セッション再利用時に前回ターンの 429 を今回の死因と
+  // 誤認する（[前回 assistant 429, 今回 user prompt] のまま無音停止する形）。
+  const latestInfo = messages[messages.length - 1]?.info;
+  if (latestInfo?.role !== 'assistant') {
+    return undefined;
+  }
+  const error = latestInfo.error;
+  if (error === undefined) {
+    return undefined;
+  }
+  const message = extractOpenCodeErrorMessage(error);
+  if (extractStatusCode(error) === RATE_LIMIT_STATUS_CODE) {
+    return message ?? `HTTP ${RATE_LIMIT_STATUS_CODE} Too Many Requests`;
+  }
+  if (message !== undefined && containsRateLimitError(message)) {
+    return message;
+  }
+  return undefined;
+}
+
 export async function getOpenCodeSessionMessages(
   model: string,
   sessionID: string,
@@ -1225,6 +1311,33 @@ export class OpenCodeClient {
 
         if (!success) {
           const message = failureMessage || 'OpenCode execution failed';
+          // 無音タイムアウトで止めた場合、死因はサーバが握った 429 かもしれない。
+          // メッセージ文字列だけでは判別できないため、セッションを検死する。
+          if (
+            abortCause === 'timeout'
+            && !containsRateLimitError(message)
+            && opencodeApiClient !== undefined
+            && activeSessionId !== undefined
+          ) {
+            const rateLimitMessage = await postmortemRateLimitError(
+              opencodeApiClient,
+              activeSessionId,
+              options.cwd,
+            );
+            if (rateLimitMessage !== undefined) {
+              // プロバイダ由来の生エラー文はリクエスト内容やアカウント情報を
+              // 含みうるため、分類済みの事実だけを永続化する。
+              log.warn('OpenCode stream stalled on a provider rate limit', {
+                sessionId: activeSessionId,
+                model: options.model,
+              });
+              // 検死で 429 と確定済み。message 文字列に 429 の語が含まれるとは
+              // 限らない（statusCode だけで判定した場合）ため再判定はしない。
+              const rateLimitedResponse = this.buildRateLimitedResponse(agentType, activeSessionId, rateLimitMessage);
+              emitResult(options.onStream, false, rateLimitedResponse.error ?? rateLimitedResponse.content, activeSessionId);
+              return rateLimitedResponse;
+            }
+          }
           if (containsRateLimitError(message)) {
             const rateLimitedResponse = this.buildRateLimitedResponse(agentType, activeSessionId, message);
             emitResult(options.onStream, false, rateLimitedResponse.error ?? rateLimitedResponse.content, activeSessionId);

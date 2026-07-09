@@ -2524,6 +2524,240 @@ describe('OpenCodeClient stream cleanup', () => {
     }
   }, 20_000);
 
+  /** 無音タイムアウトで止めたセッションを検死する共通シナリオ */
+  async function runStalledSessionScenario(
+    messagesData: unknown,
+  ): Promise<import('../core/models/index.js').AgentResponse> {
+    const { OpenCodeClient } = await import('../infra/opencode/client.js');
+    const chatterStream = new ChatterOnlyEventStream(100);
+    const messages = vi.fn().mockResolvedValue({ data: messagesData });
+    createOpencodeMock.mockResolvedValue({
+      client: {
+        instance: { dispose: vi.fn().mockResolvedValue({ data: {} }) },
+        session: {
+          create: vi.fn().mockResolvedValue({ data: { id: 'session-stalled' } }),
+          promptAsync: vi.fn().mockReturnValue(new Promise(() => { /* 完了しない */ })),
+          messages,
+        },
+        event: { subscribe: vi.fn().mockResolvedValue({ stream: chatterStream }) },
+        permission: { reply: vi.fn() },
+      },
+      server: { close: vi.fn() },
+    });
+
+    return new OpenCodeClient().call('coder', 'do it', {
+      cwd: '/tmp',
+      model: 'opencode/big-pickle',
+      interactionTimeoutMs: 500,
+    });
+  }
+
+  it('Given a stalled session whose last assistant message carries a 429 When the idle watchdog fires Then the call is reported as rate limited', async () => {
+    process.env.TAKT_OPENCODE_STREAM_IDLE_TIMEOUT_MS = '300';
+    try {
+      const result = await runStalledSessionScenario([
+        {
+          info: {
+            role: 'assistant',
+            error: { name: 'APIError', data: { message: 'Too Many Requests', statusCode: 429, isRetryable: true } },
+          },
+          parts: [],
+        },
+      ]);
+
+      expect(result.status).toBe('rate_limited');
+      expect(result.errorKind).toBe('rate_limit');
+      expect(result.error).toContain('Too Many Requests');
+    } finally {
+      delete process.env.TAKT_OPENCODE_STREAM_IDLE_TIMEOUT_MS;
+    }
+  }, 20_000);
+
+  it('Given a stalled session whose last assistant error is unrelated When the idle watchdog fires Then the timeout error is preserved', async () => {
+    process.env.TAKT_OPENCODE_STREAM_IDLE_TIMEOUT_MS = '300';
+    try {
+      const result = await runStalledSessionScenario([
+        {
+          info: {
+            role: 'assistant',
+            error: { name: 'UnknownError', data: { message: 'boom' } },
+          },
+          parts: [],
+        },
+      ]);
+
+      expect(result.status).toBe('error');
+      expect(result.errorKind).toBeUndefined();
+      expect(result.error).toContain('timed out');
+    } finally {
+      delete process.env.TAKT_OPENCODE_STREAM_IDLE_TIMEOUT_MS;
+    }
+  }, 20_000);
+
+  it('Given a stalled session with no assistant error When the idle watchdog fires Then the timeout error is preserved', async () => {
+    process.env.TAKT_OPENCODE_STREAM_IDLE_TIMEOUT_MS = '300';
+    try {
+      const result = await runStalledSessionScenario([{ info: { role: 'assistant' }, parts: [] }]);
+
+      expect(result.status).toBe('error');
+      expect(result.error).toContain('timed out');
+    } finally {
+      delete process.env.TAKT_OPENCODE_STREAM_IDLE_TIMEOUT_MS;
+    }
+  }, 20_000);
+
+  it('Given an older assistant message carries a 429 but the latest one does not When the idle watchdog fires Then the stale rate limit is not reported', async () => {
+    process.env.TAKT_OPENCODE_STREAM_IDLE_TIMEOUT_MS = '300';
+    try {
+      const result = await runStalledSessionScenario([
+        {
+          info: {
+            role: 'assistant',
+            error: { name: 'APIError', data: { message: 'Too Many Requests', statusCode: 429, isRetryable: true } },
+          },
+          parts: [],
+        },
+        { info: { role: 'user' }, parts: [] },
+        { info: { role: 'assistant' }, parts: [] },
+      ]);
+
+      expect(result.status).toBe('error');
+      expect(result.error).toContain('timed out');
+    } finally {
+      delete process.env.TAKT_OPENCODE_STREAM_IDLE_TIMEOUT_MS;
+    }
+  }, 20_000);
+
+  it('Given an older assistant carries a 429 and the latest message is still a user turn When the idle watchdog fires Then the stale rate limit is not reported', async () => {
+    process.env.TAKT_OPENCODE_STREAM_IDLE_TIMEOUT_MS = '300';
+    try {
+      // セッション再利用で「前回 assistant の 429 → 今回 user prompt → assistant
+      // 未生成のまま無音停止」という並びを再現する。
+      const result = await runStalledSessionScenario([
+        {
+          info: {
+            role: 'assistant',
+            error: { name: 'APIError', data: { message: 'Too Many Requests', statusCode: 429, isRetryable: true } },
+          },
+          parts: [],
+        },
+        { info: { role: 'user' }, parts: [] },
+      ]);
+
+      expect(result.status).toBe('error');
+      expect(result.error).toContain('timed out');
+    } finally {
+      delete process.env.TAKT_OPENCODE_STREAM_IDLE_TIMEOUT_MS;
+    }
+  }, 20_000);
+
+  it('Given the latest assistant error exposes the rate limit only in a top level message When the idle watchdog fires Then it is reported as rate limited', async () => {
+    process.env.TAKT_OPENCODE_STREAM_IDLE_TIMEOUT_MS = '300';
+    try {
+      const result = await runStalledSessionScenario([
+        {
+          info: {
+            role: 'assistant',
+            error: { name: 'UnknownError', message: 'AI_APICallError: Too Many Requests' },
+          },
+          parts: [],
+        },
+      ]);
+
+      expect(result.status).toBe('rate_limited');
+      expect(result.errorKind).toBe('rate_limit');
+    } finally {
+      delete process.env.TAKT_OPENCODE_STREAM_IDLE_TIMEOUT_MS;
+    }
+  }, 20_000);
+
+  it('Given the latest assistant error carries a string status code When the idle watchdog fires Then it is reported as rate limited', async () => {
+    process.env.TAKT_OPENCODE_STREAM_IDLE_TIMEOUT_MS = '300';
+    try {
+      const result = await runStalledSessionScenario([
+        {
+          info: {
+            role: 'assistant',
+            error: { name: 'APIError', data: { message: 'rate exceeded', statusCode: '429' } },
+          },
+          parts: [],
+        },
+      ]);
+
+      expect(result.status).toBe('rate_limited');
+      expect(result.errorKind).toBe('rate_limit');
+    } finally {
+      delete process.env.TAKT_OPENCODE_STREAM_IDLE_TIMEOUT_MS;
+    }
+  }, 20_000);
+
+  it('Given the postmortem query hangs When the idle watchdog fires Then the timeout error is preserved without hanging', async () => {
+    process.env.TAKT_OPENCODE_STREAM_IDLE_TIMEOUT_MS = '300';
+    // 検死 RPC のハングを実時間 5 秒待たない（CI でのフレークを避ける）
+    process.env.TAKT_OPENCODE_POSTMORTEM_TIMEOUT_MS = '200';
+    try {
+      const { OpenCodeClient } = await import('../infra/opencode/client.js');
+      const chatterStream = new ChatterOnlyEventStream(100);
+      createOpencodeMock.mockResolvedValue({
+        client: {
+          instance: { dispose: vi.fn().mockResolvedValue({ data: {} }) },
+          session: {
+            create: vi.fn().mockResolvedValue({ data: { id: 'session-stalled' } }),
+            promptAsync: vi.fn().mockReturnValue(new Promise(() => { /* 完了しない */ })),
+            messages: vi.fn().mockReturnValue(new Promise(() => { /* 応答しない */ })),
+          },
+          event: { subscribe: vi.fn().mockResolvedValue({ stream: chatterStream }) },
+          permission: { reply: vi.fn() },
+        },
+        server: { close: vi.fn() },
+      });
+
+      const result = await new OpenCodeClient().call('coder', 'do it', {
+        cwd: '/tmp',
+        model: 'opencode/big-pickle',
+        interactionTimeoutMs: 500,
+      });
+
+      expect(result.status).toBe('error');
+      expect(result.error).toContain('timed out');
+    } finally {
+      delete process.env.TAKT_OPENCODE_STREAM_IDLE_TIMEOUT_MS;
+      delete process.env.TAKT_OPENCODE_POSTMORTEM_TIMEOUT_MS;
+    }
+  }, 20_000);
+
+  it('Given the postmortem query itself fails When the idle watchdog fires Then the timeout error is preserved', async () => {
+    process.env.TAKT_OPENCODE_STREAM_IDLE_TIMEOUT_MS = '300';
+    try {
+      const { OpenCodeClient } = await import('../infra/opencode/client.js');
+      const chatterStream = new ChatterOnlyEventStream(100);
+      createOpencodeMock.mockResolvedValue({
+        client: {
+          instance: { dispose: vi.fn().mockResolvedValue({ data: {} }) },
+          session: {
+            create: vi.fn().mockResolvedValue({ data: { id: 'session-stalled' } }),
+            promptAsync: vi.fn().mockReturnValue(new Promise(() => { /* 完了しない */ })),
+            messages: vi.fn().mockRejectedValue(new Error('server gone')),
+          },
+          event: { subscribe: vi.fn().mockResolvedValue({ stream: chatterStream }) },
+          permission: { reply: vi.fn() },
+        },
+        server: { close: vi.fn() },
+      });
+
+      const result = await new OpenCodeClient().call('coder', 'do it', {
+        cwd: '/tmp',
+        model: 'opencode/big-pickle',
+        interactionTimeoutMs: 500,
+      });
+
+      expect(result.status).toBe('error');
+      expect(result.error).toContain('timed out');
+    } finally {
+      delete process.env.TAKT_OPENCODE_STREAM_IDLE_TIMEOUT_MS;
+    }
+  }, 20_000);
+
   /** 予算系4テスト共通: イベント列を流して call の結果だけ返す */
   async function runBudgetScenario(sessionId: string, events: unknown[]): Promise<import('../core/models/index.js').AgentResponse> {
     const { OpenCodeClient } = await import('../infra/opencode/client.js');
