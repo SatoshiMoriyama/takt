@@ -199,6 +199,10 @@ async function resolveLatestSessionId(options: KiroCallOptions): Promise<string 
   const timer = setTimeout(() => controller.abort(), KIRO_LIST_SESSIONS_TIMEOUT_MS);
   timer.unref?.();
 
+  // Propagate parent abort to the list-sessions controller.
+  const parentAbortHandler = (): void => controller.abort();
+  options.abortSignal?.addEventListener('abort', parentAbortHandler, { once: true });
+
   try {
     const listOptions: KiroCallOptions = {
       ...options,
@@ -213,6 +217,7 @@ async function resolveLatestSessionId(options: KiroCallOptions): Promise<string 
     return undefined;
   } finally {
     clearTimeout(timer);
+    options.abortSignal?.removeEventListener('abort', parentAbortHandler);
   }
 }
 
