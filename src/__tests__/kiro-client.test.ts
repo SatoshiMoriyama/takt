@@ -148,20 +148,28 @@ function mockSpawnSequence(scenarios: SpawnScenario[]): void {
     const child = createMockChildProcess();
 
     queueMicrotask(() => {
-      if (scenario?.stdout) {
+      if (!scenario) {
+        const error = Object.assign(new Error(`Unexpected spawn call #${callIndex} (only ${scenarios.length} scenarios defined)`), {
+          code: 'ERR_TEST_UNEXPECTED_SPAWN',
+        });
+        child.emit('error', error);
+        return;
+      }
+
+      if (scenario.stdout) {
         child.stdout.emit('data', Buffer.from(scenario.stdout, 'utf-8'));
       }
-      if (scenario?.stderr) {
+      if (scenario.stderr) {
         child.stderr.emit('data', Buffer.from(scenario.stderr, 'utf-8'));
       }
 
-      if (scenario?.error) {
+      if (scenario.error) {
         const error = Object.assign(new Error(scenario.error.message), scenario.error);
         child.emit('error', error);
         return;
       }
 
-      child.emit('close', scenario?.code ?? 0, scenario?.signal ?? null);
+      child.emit('close', scenario.code ?? 0, scenario.signal ?? null);
     });
 
     return child;
